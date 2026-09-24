@@ -36,8 +36,11 @@
 - 3 で `AO_DATA_READY`、4-b で `MASK_CHECK_OK` が `True` にならなければ、本学習のセルは開始しない。
 - 5 で起動コマンド・想定 step 数・保存回数・HF 保存先・衝突の有無を確認する。
 
-次に `RUN_MODE="trial"` にして 6-a → 6-b（試走: 学習 → HF 転送 → プロセス終了 → HF から取得 → 新プロセスで再開）。
-試走の run は `trial-` で始まり、本学習と別ディレクトリ・別データ（先頭 512 行）を使う。試走の checkpoint は本学習に使わない。
+次に `RUN_MODE="trial"` にして 6-a → 6-b（試走）。試走の流れ:
+学習 → `TRIAL_KILL_AFTER_STEP` の checkpoint 保存完了を検知 → 学習プロセスを一時停止（SIGSTOP）→ HF へ転送・検証 → プロセス終了（切断の模擬）
+→ ローカル checkpoint を削除 → HF から取得・manifest 検証 → 新プロセスで再開 → 最終 step まで学習 → 中断なしの参照 run と lr / loss を比較。
+試走の run は `trial-` で始まり、本学習と別ディレクトリ・別データ（先頭 512 行、4 epoch = 8 step）を使う。試走の checkpoint は本学習に使わない。
+試走 run の再開は同じセッション内でだけ成立する（試走データは 6-b が作るため）。
 
 本学習は `RUN_MODE="train"`、`RUN_KIND="baseline"` で 7、`RUN_KIND="search"` かつ `SEARCH_RUN_LIST` を設定して 8。
 学習中は 1 セルが終了まで動き続け、監視スレッドが保存完了ごとに checkpoint を HF の
@@ -60,7 +63,8 @@
 
 ## 6. 未検証の項目
 
-このノートブックは GPU の無い環境で静的に検証した（構文、データ抽出・監査の全行実行、tokenizer での長さ計算、公式 dataset クラスによる loss mask 検証、公式 trainer の import）。
+このノートブックは GPU の無い環境で検証した（構文、データ抽出・監査の全行実行、tokenizer での長さ計算、公式 dataset クラスによる全行の loss mask 検証、
+公式 trainer の import、ドライラン、および公式 trainer の代わりに保存形式だけを模した偽プロセスを使った 起動・監視・一時停止/終了・再開・manifest・記録 の処理）。
 以下は Colab で各セルを実行し、ログを確認するまで「動作確認済み」ではない。
 
 - 依存関係のインストールと flash-attn wheel の適用（Colab の Python / torch / CUDA の組み合わせに依存）

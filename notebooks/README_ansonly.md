@@ -23,9 +23,11 @@
 | 対象モデル | `MODEL_KEY` | `"Qwen3-1.7B"`（`SUPPORTED_MODELS` から選ぶ。Qwen2.5 系は理由付きで blocked） |
 | 探索候補 | `SEARCH_GRID_PROPOSED`（提案）/ `SEARCH_GRID_CONFIRMED`（確定）/ `SEARCH_RUN_LIST`（実行する組） | 提案のみ |
 | 最大系列長 | `MAX_LENGTH_MODE` | `"auto_fit"`（全行が収まる長さ。`"official"` で 20000 に戻せる） |
-| 保存周期 | `SAVE_FREQ` | 40（正整数。公式 CoT は 10） |
+| 保存周期 | `SAVE_FREQ` | 10（公式 CoT と同じ。保存は学習結果に影響しない） |
+| HF へ転送する step | `HF_UPLOAD_STEPS` | `"cot_public+resume"`（公開 CoT 学生と同じ step 10, 20, 40, 80, 160, 320, 480, 640 と `RESUME_CKPT_EVERY`=40 の倍数。それ以外はローカルで削除）/ `"all"` |
+| 公式 8 GPU の再現 | `EMULATE_OFFICIAL_WORLD_SIZE` | `True`（下記） |
 | HF 保存先 | `HF_CKPT_REPO_ID` / `HF_FINAL_MODEL_REPO_ID` | `None` → HF の whoami から決める |
-| 試走 | `TRIAL_NUM_ROWS`, `TRIAL_EPOCHS`, `TRIAL_SAVE_FREQ`, `TRIAL_KILL_AFTER_STEP` | 512 行 / 3 epoch / 3 / 3 |
+| 試走 | `TRIAL_NUM_ROWS`, `TRIAL_EPOCHS`, `TRIAL_SAVE_FREQ`, `TRIAL_KILL_AFTER_STEP` | 512 行 / 4 epoch / 3 / 3 |
 | 再開 | `RESUME_RUN_ID`, `RESUME_STEP` | `None` / `"latest"` |
 | dev 評価 | `DEV_EVAL_ENABLED`, `DEV_EVAL_SOURCE` など | 無効（dev 未確定） |
 
@@ -43,18 +45,30 @@
 | 方法 | 何を揃えるか |
 | --- | --- |
 | 学習用 parquet の行を並べ替える（`data/train_view/*.emul-w8-nN.parquet`。元の AO parquet は変更しない） | 各 step の各 micro batch が公式 8 GPU と同じ 4 行になる |
-| `trainer.importance_sampling_mode=adv-only` と `advantage` 列 = N/8 | loss を N/8 倍する。2 のべき乗倍なので、勾配・clip・AdamW の入力が公式 8 GPU と同じ値になる |
+| `trainer.importance_sampling_mode=adv-only` と `advantage` 列 = N/8 | loss を N/8 倍する。2 のべき乗倍なので、勾配・clip・AdamW の入力が丸め誤差の範囲で公式 8 GPU と同じ値になる |
 
 `optim.clip_grad` を 8/N にする方法は採らない。AdamW の eps（公式 trainer では変更できない 1e-8）の効き方が変わり、公式と一致しないため。
-ログの `train/loss` は N/8 倍になるので、ノートブックの表示と実験記録では公式スケールに戻した値も出す。
-残る差は丸め誤差程度（GPU の種類、bf16 での勾配の加算順序、flash-attn の非決定性、padding 長による行列積の形）で、セクション 4-a が一覧を表示する。
+ログの `train/loss` は N/8 倍になるので、ノートブックの表示と実験記録では公式スケールに戻した値も出す。戻した値は、token 平均の計算精度の違い（adv-only は fp32、vanilla は bf16）で公式ログと最大 0.4% 程度ずれ得る。勾配は影響を受けない。
+
+検証（CPU 上で公式 trainer を gloo で動かし、小型 Qwen3 と実 AO データ 512 行で 6 step）:
+
+| 構成 | 公式 8 プロセスとのパラメータ差（公式の移動量に対する比） |
+| --- | --- |
+| fp32、1 GPU + 並べ替え + adv-only | 1.2e-6（丸め誤差） |
+| bf16、1 GPU + 並べ替え + adv-only | 1.5〜3.6% |
+| bf16、2 GPU + 並べ替え + adv-only | 0.7〜1.3% |
+| bf16、1 GPU、そのまま（修正前） | 7〜14% |
+
+bf16 で残る差は、fp32 では一致する 2 つの計算どうしでも同じ大きさで出る丸め差（勾配の加算順序）で、公式コードを変えずには消せない。他に残る差は GPU の種類、flash-attn の非決定性、padding 長による行列積の形、grad_norm ログの意味（公式は各 GPU の shard ノルムの平均）で、ドライラン（セクション 5）と実験記録に一覧が出る。
+
+メモリ不足のとき、micro batch を 4 から変えると micro batch 構成を再現できない。条件を保つには GPU を大きくするか 2 台・4 台にする。micro batch を変える場合は `EMULATE_OFFICIAL_WORLD_SIZE=False` にし、公式との差として記録される。
 
 ## 3. 実行順（初回）
 
-セル 0（認証）→ 設定 → 1 → 2 → 3 → 4-a → 4-b → 5（ドライラン）。ここまでは GPU 不要で、HF への書き込みもしない。
+セル 0（認証）→ 設定 → 1 → 2 → 3 → 4-a → 4-b → 5（ドライラン）。ここまでは学習も HF への書き込みもしない（GPU の無いランタイムでは 1 GPU として確認する）。
 
-- 3 で `AO_DATA_READY`、4-b で `MASK_CHECK_OK` と `VIEW_CHECK_OK`（公式 8 GPU の micro batch 構成の再現確認）が `True` にならなければ、本学習のセルは開始しない。
-  4-b は学習に使うのと同じ GPU 台数のランタイムで実行する。
+- 3 で `AO_DATA_READY`、4-b で `MASK_CHECK_OK` が `True` にならなければ、本学習のセルは開始しない。
+- `EMULATE_OFFICIAL_WORLD_SIZE=True` では、4-b の `VIEW_CHECK_OK`（公式 8 GPU の micro batch 構成の再現確認）も必要。4-b は学習に使うのと同じ GPU 台数で確認するので、学習する GPU ランタイムで 4-b をもう一度実行する（台数が違うと本学習のセルが止まる）。`False` にした場合は警告を出して学習し、公式との差として記録する。
 - 5 で起動コマンド・想定 step 数・保存回数・HF 保存先・衝突の有無を確認する。
 
 次に `RUN_MODE="trial"` にして 6-a → 6-b（試走）。試走の流れ:

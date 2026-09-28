@@ -29,11 +29,32 @@
 | 再開 | `RESUME_RUN_ID`, `RESUME_STEP` | `None` / `"latest"` |
 | dev 評価 | `DEV_EVAL_ENABLED`, `DEV_EVAL_SOURCE` など | 無効（dev 未確定） |
 
+### 公式 CoT 学習（8 GPU）との条件合わせ
+
+公式 CoT 学生は 8 GPU で学習された（`README.md` の "We trained all models on 8 H200 GPUs."）。
+公式 trainer は micro batch ごとに loss を割らずに backward するので、1 GPU 内の勾配は micro batch の和になり、GPU 間は FSDP2 が平均する。
+このため GPU 台数 N が 8 と違うと、次の 2 点が公式と変わる。
+
+- **micro batch（4 行）の組み合わせ**: loss は micro batch ごとの token 平均なので、各 token の重みが変わる
+- **勾配の大きさ**: 8/N 倍になり、`clip_grad=1.0` の効き方と AdamW の eps の効き方が変わる
+
+`EMULATE_OFFICIAL_WORLD_SIZE=True`（既定）では、公式コードを変えずに次の方法で公式 8 GPU の計算を再現する。N は 8 の約数（1, 2, 4, 8）であること。
+
+| 方法 | 何を揃えるか |
+| --- | --- |
+| 学習用 parquet の行を並べ替える（`data/train_view/*.emul-w8-nN.parquet`。元の AO parquet は変更しない） | 各 step の各 micro batch が公式 8 GPU と同じ 4 行になる |
+| `trainer.importance_sampling_mode=adv-only` と `advantage` 列 = N/8 | loss を N/8 倍する。2 のべき乗倍なので、勾配・clip・AdamW の入力が公式 8 GPU と同じ値になる |
+
+`optim.clip_grad` を 8/N にする方法は採らない。AdamW の eps（公式 trainer では変更できない 1e-8）の効き方が変わり、公式と一致しないため。
+ログの `train/loss` は N/8 倍になるので、ノートブックの表示と実験記録では公式スケールに戻した値も出す。
+残る差は丸め誤差程度（GPU の種類、bf16 での勾配の加算順序、flash-attn の非決定性、padding 長による行列積の形）で、セクション 4-a が一覧を表示する。
+
 ## 3. 実行順（初回）
 
 セル 0（認証）→ 設定 → 1 → 2 → 3 → 4-a → 4-b → 5（ドライラン）。ここまでは GPU 不要で、HF への書き込みもしない。
 
-- 3 で `AO_DATA_READY`、4-b で `MASK_CHECK_OK` が `True` にならなければ、本学習のセルは開始しない。
+- 3 で `AO_DATA_READY`、4-b で `MASK_CHECK_OK` と `VIEW_CHECK_OK`（公式 8 GPU の micro batch 構成の再現確認）が `True` にならなければ、本学習のセルは開始しない。
+  4-b は学習に使うのと同じ GPU 台数のランタイムで実行する。
 - 5 で起動コマンド・想定 step 数・保存回数・HF 保存先・衝突の有無を確認する。
 
 次に `RUN_MODE="trial"` にして 6-a → 6-b（試走）。試走の流れ:

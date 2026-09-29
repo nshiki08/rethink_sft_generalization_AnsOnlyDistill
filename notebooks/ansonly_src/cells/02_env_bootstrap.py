@@ -55,7 +55,7 @@ GPU_PROFILES = {
 }
 ALLOW_BLACKWELL_TORCH_DEVIATION = False   # G4 を使うときだけ True にする（公式 torch からの変更として記録される）
 
-# 論文の数学評価（evaluation/math_eval/math_eval_budget.py, vLLM）用の環境。セクション 9 で必要になったときに作る（学習用の公式環境とは別）。
+# 論文の数学評価（evaluation/math_eval/math_eval_budget.py, vLLM）用の環境。評価ノートブックの評価セルで必要になったときに作る（学習用の公式環境とは別）。
 # vLLM 0.8.5 は公式 requirements.txt の pin（torch==2.6.0 を要求）。依存が多いので学習用の環境には入れない。
 # 公式 requirements.txt と同じ版: 下記すべて（matplotlib と pandas は requirements.txt に無い。評価スクリプトが import するので追加）
 EVAL_PIP_PINNED = [
@@ -319,7 +319,7 @@ ENV_BOOTSTRAP = dict(
     fork_repo=FORK_REPO_URL, fork_ref=FORK_REF, fork_commit=FORK_COMMIT, upstream_repo=UPSTREAM_REPO_URL,
     upstream_reference_commit=UPSTREAM_REFERENCE_COMMIT, upstream_fetched=UPSTREAM_FETCHED,
     official_code_unchanged=OFFICIAL_CODE_UNCHANGED, official_diff_stat=OFFICIAL_DIFF_STAT,
-    # セクション 9 が評価用の環境を作るときに使う（uv は Colab のカーネルの Python に入っている）
+    # 評価ノートブックが評価用の環境を作るときに使う（uv は Colab のカーネルの Python に入っている）
     uv_cmd=UV, uv_cache_dir=_uv_env["UV_CACHE_DIR"], uv_python_install_dir=_uv_env["UV_PYTHON_INSTALL_DIR"],
     eval_env_dir=f"{WORK_DIR}/eval_env", eval_pip_pinned=EVAL_PIP_PINNED, eval_constraints=EVAL_CONSTRAINTS,
     train_constraints=TRAIN_CONSTRAINTS, constraint_excluded=_cons_dropped, train_env_freeze=TRAIN_ENV_FREEZE,

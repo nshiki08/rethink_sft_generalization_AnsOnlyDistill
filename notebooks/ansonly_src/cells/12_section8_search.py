@@ -23,5 +23,5 @@ else:
             continue
         preflight_train(_spec)
         TRAIN_RESULTS[_rid] = launch_training(_spec)
-        write_experiment_record(_spec, [TRAIN_RESULTS[_rid]], unverified=["論文と同じ評価（セクション 9）未実施", "最終モデル未変換"])
+        write_experiment_record(_spec, [TRAIN_RESULTS[_rid]], unverified=["論文と同じ評価（評価ノートブック）未実施", "最終モデル未変換"])
     print("探索 run の完了状況:", {k: ("OK" if v["exit_code"] == 0 else f"rc={v['exit_code']}") for k, v in TRAIN_RESULTS.items()})

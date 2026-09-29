@@ -1,4 +1,4 @@
-"""CPU test of section 9 helpers (paper-protocol evaluation). vLLM generation itself needs a GPU and is not run here.
+"""CPU test of the evaluation notebook helpers (paper-protocol evaluation). vLLM generation itself needs a GPU and is not run here.
 
 Checks: the symlink to the official hard-coded data path, that the official script's dataset loaders/keys work on it,
 parsing of the official result file, paper reference lookup.
@@ -55,4 +55,19 @@ assert g["paper_reference"]("ao", 640, "AIME24", "default（Sec. 2.1, Tab. 3）"
 g["MODEL_KEY"] = "Qwen3-14B"
 assert g["paper_reference"]("ao", 640, "MATH500", "default（Sec. 2.1, Tab. 3）") == 95.1 and g["paper_reference"]("base", 0, "AIME24") == 14.7
 g["MODEL_KEY"] = _mk
+# 4. 評価ノートブック: run_id 未指定なら HF にある MODEL_KEY の本学習 run を評価対象にする（試走と別モデルは除く）
+class _FakeApi:
+    def list_repo_files(self, repo_id, repo_type="model"):
+        return ["README.md", "runs/Qwen3-1.7B_Math-AO-20k_lr5e-5_ep8_bs256_baseline/global_step_10/ao_ckpt_manifest.json",
+                "runs/Qwen3-1.7B_Math-AO-20k_lr5e-5_ep8_bs256_baseline/paper_eval/x.json",
+                "runs/trial-Qwen3-1.7B_x/global_step_3/ao_ckpt_manifest.json", "runs/Qwen3-4B_Math-AO-20k_lr5e-5_ep8_bs256_baseline/global_step_10/a.json"]
+g.update(HF_API=_FakeApi(), HF_CKPT_REPO_ID="me/rethink-sft-ao-checkpoints", hf_repo_exists=lambda r, repo_type="model": True, MODEL_KEY="Qwen3-1.7B",
+         PAPER_EVAL_AO_RUNS=None, TRAIN_RESULTS={},
+         list_hf_checkpoints=lambda rid: [dict(step=s, complete=True) for s in (10, 20, 30, 40, 640)],
+         get_manifest=lambda rid, step: {"run_config": {"paper_condition": "default（Sec. 2.1, Tab. 3）"}})
+assert g["hf_model_runs"]() == ["Qwen3-1.7B_Math-AO-20k_lr5e-5_ep8_bs256_baseline"]
+_t = g["paper_eval_targets"]()
+assert [(t["kind"], t["step"]) for t in _t] == [("ao", 10), ("ao", 20), ("ao", 40), ("ao", 640)], _t   # 論文の評価 step のうち HF にあるもの
+assert g["PAPER_EVAL_K"] == {"MATH500": 3, "AIME24": 10}
+print("eval-notebook run selection OK")
 print("ALL EVAL HELPER TESTS PASSED")

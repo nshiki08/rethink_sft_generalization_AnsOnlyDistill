@@ -179,19 +179,23 @@ RESUME_RUN_ID = None              # 例 "Qwen3-1.7B_Math-AO-20k_lr5e-5_ep8_bs256
 RESUME_STEP = "latest"            # "latest"（最新の完了済み）または整数 step
 
 # =============================================================================
-# 評価（セクション 9）: 論文と同じ評価（論文 v2 Sec. 2.2, App. B.4/B.5）
+# 評価（評価ノートブック ansonly_eval.ipynb で使う）: 論文と同じ評価（論文 v2 Sec. 2.2, App. B.4/B.5）
 #   公式スクリプト evaluation/math_eval/math_eval_budget.py を無変更で実行する（vLLM 0.8.5, temperature 0.6, top_p 0.95, 最大 32768 token,
 #   MATH500 は 3 サンプルの平均正答率 avg@3、AIME24 は avg@10、math-verify で採点）。論文の数学評価はこの 2 つだけ。
 #   学習用の公式環境とは別の Python 3.12 環境（vLLM 0.8.5 と公式 pin）を作って実行する。GPU は A100 など（vLLM 0.8.5 は G4 に非対応）
 #   論文との差: 論文は 2 GPU（tensor parallel 2）、ここは 1 GPU。数値の丸め程度の差（記録する）
 # =============================================================================
-PAPER_EVAL_ENABLED = False        # True で実行（学習が終わってから。GPU メモリの 85% を使う）
+PAPER_EVAL_ENABLED = True         # 評価ノートブックの評価セルを実行する（学習ノートブックには評価セルが無い）。GPU メモリの 85% を使う
 PAPER_EVAL_DATASETS = ["MATH500", "AIME24"]
-PAPER_EVAL_AO_RUNS = None         # 評価する AO run の run_id のリスト。None → このセッションで学習した run
+PAPER_EVAL_AO_RUNS = None         # 評価する AO run の run_id のリスト。None → HF の checkpoint repo にある MODEL_KEY の本学習 run すべて
 PAPER_EVAL_AO_STEPS = "paper"     # "paper" → PAPER_EVAL_STEPS のうち HF にある step（論文と同じ報告方法: 各 step の推移）/ 整数のリスト
 PAPER_EVAL_BASE = False           # Base（step 0）も評価する。既定 False: Base は論文の値（PAPER_REFERENCE）を使うと決定済み
 PAPER_EVAL_COT_STEPS = []         # 公開 CoT 学生のうち再評価する step（例 [640]）。既定 []: CoT は論文の値（PAPER_REFERENCE）を使うと決定済み（評価環境の差は許容）
 PAPER_EVAL_DELETE_MERGED = True   # 評価後に変換済みの AO 重みをローカルから消す（ディスク節約。HF の checkpoint は残る）
+PAPER_EVAL_K = {"MATH500": 3, "AIME24": 10}   # 公式 math_eval_budget.py の DATASET_CONFIGS の test_n（論文 App. B.4 と同じ avg@3 / avg@10）
+PAPER_EVAL_DEVIATIONS = ["tensor_parallel_size 1（論文と公式スクリプトは 2 GPU で 2）と GPU の種類（論文は H200）。数値がわずかに変わると temperature 0.6 の"
+                         "サンプリング結果も変わるので、論文値とはサンプリングの揺らぎの範囲（AIME24 は 30 問なので数ポイント）で異なり得る。"
+                         "CoT 学生と Base は論文の値を使う（この差は許容すると決定済み）"]
 
 # 論文の値（App. D Table 18〜32、数学のみ。1.7B / 4B / 8B / 14B の Base・CoT・NoCoT。MATH500 avg@3 / AIME24 avg@10、%）。比較の表示に使う。NoCoT は step 20 の報告なし
 PAPER_REFERENCE = {
@@ -222,7 +226,7 @@ PAPER_REFERENCE = {
 }
 
 # =============================================================================
-# 最終モデル（セクション 10）
+# 最終モデル（学習ノートブックのセクション 9）
 # =============================================================================
 FINAL_RUN_ID = None               # None → このセッションで学習した run
 FINAL_STEP = "last"               # "last" または整数 step

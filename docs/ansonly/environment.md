@@ -31,7 +31,8 @@ Colab のカーネル（Python 3.13）
 - 公式環境の作成は uv（`--python-preference only-managed` で python-build-standalone の 3.12 を使う。OS の Python に依存しない）。CPU での実測: venv 作成と全 pin の導入で約 20 秒（CUDA 版 torch はダウンロード量が多いので Colab では数分）
 - `UV_*` 環境変数は公式環境の作成時に外す（Colab が uv 用の制約ファイルを指定している場合があり、Colab 既定の版に固定されるため）
 - 公式環境カーネルには `PYTHONPATH=<repo>` だけを渡す（Colab カーネルの PYTHONPATH に入っている 3.13 用パッケージを読まないため）
-- 公式環境カーネルは新しい process group で起動する。セル 1 を再実行すると、前回のカーネル（GPU メモリを持っている可能性がある）を pid ファイルから探して終了する
+- 公式環境カーネルと学習プロセス（torchrun）はそれぞれ新しい process group で起動し、process group ID を pid ファイルに書く。セル 1 を再実行すると、両方の group を終了してから環境を作る（GPU メモリの解放のため）。pid の再利用で無関係なプロセスを止めないよう、group 内のプロセスの cmdline（`ipykernel_launcher` と公式環境のパス、`torch.distributed.run`）を確認してから終了する
+- 公式環境の確認（セル 1）: Python 3.12、torch の GPU アーキテクチャ（同じ major の小さい minor 向けコードは動くので、L4 の sm_89 は sm_86/sm_80 のコードで可）、GPU 上の行列積、flash-attn の forward / backward カーネル、torch の C++ ABI と flash-attn wheel の一致、NCCL の版、公式 trainer と model merger の import
 
 ### pin の出典
 
@@ -56,6 +57,7 @@ Colab のカーネル（Python 3.13）
 | flash-attn | 2.7.4.post1（torch2.6, cxx11abiFALSE） | 2.7.4.post1（torch2.7, cxx11abiTRUE） | torch2.6 用 wheel は sm_80/sm_90 のみ。torch2.7 用 wheel は sm_80/90/100/120 を含む（wheel 内の fatbin を解析） |
 | 勾配の GPU 間平均・累積、clip、state_dict 読み込み | — | 2.6 と同じ | torch v2.6.0 / v2.7.0 / v2.7.1 のソース比較（`_fsdp_collectives.py`, `clip_grad.py`、verl の vendored `state_dict.py` は 2.7.0 のコピー） |
 | NCCL / cuBLAS | 2.21.5 / 12.4 | 2.26.2 / 12.8 | カーネル実装が変わるので丸め誤差の範囲の差が出る |
+| sympy | 1.13.1 | 1.13.3 | torch 2.7.1 が `sympy>=1.13.3` を要求し、公式 pin のままでは依存解決できない（uv の `pip compile` で確認）。math-verify で全 20,480 行を再照合し、不一致は同じ 3 行（12364, 16249, 16611）で変わらないことを確認 |
 
 G4 の出典: Colab の告知（[@GoogleColab, 2026-03-04](https://x.com/GoogleColab/status/2029331896409464974)、検索結果の抜粋）、compute capability は [NVIDIA CUDA GPUs](https://developer.nvidia.com/cuda-gpus)。
 
@@ -87,5 +89,6 @@ AdamW の状態は最初の `optimizer.step()` で作られるので、メモリ
 
 - Colab の G4 ホストのドライバ版（CUDA 12.8 には R570 以上が必要）
 - A100 80GB の割り当て（Pro+ でも保証されない。セル 1 が GPU 名と VRAM を表示・記録する）
-- CUDA 版 torch を含む公式環境の作成時間とディスク使用量（推定 5〜6 GB）
+- CUDA 版 torch を含む公式環境の作成時間とディスク使用量（推定 5〜6 GB。uv のキャッシュと venv は同じディスクなので hardlink で共有される。G4 用の flash-attn wheel は単体で約 1.4 GB）
+- `%%ao` を先頭に置いたセルで Colab のフォームタイトル（`# @title`）が表示されるか（表示されなくても実行には影響しない）
 - pip の cuDNN / NCCL が Colab のシステム版より優先されるか（セル 1 が cuDNN / NCCL の版を表示・記録する）

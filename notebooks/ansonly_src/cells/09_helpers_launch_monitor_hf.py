@@ -372,6 +372,8 @@ def launch_training(spec, kill_after_step=None, upload=None, keep_local=None, qu
     # start_new_session=True: torchrun とワーカーを 1 つのプロセスグループにし、試走の一時停止/終了をグループごと送れるようにする
     proc = subprocess.Popen(cmd, cwd=REPO_DIR, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, errors="replace",
                             start_new_session=True)
+    with open(f"{WORK_DIR}/ao-trainer.pgid", "w") as f:   # セル 1 を再実行したとき、残った学習プロセスをこの process group ごと終了する
+        f.write(str(proc.pid))
     mon = TrainingMonitor(proc, spec, kill_after_step=kill_after_step, upload=upload, keep_local=keep_local, poll_sec=poll_sec, stable_scans=stable_scans)
     mon.start()
     metrics, events = [], []

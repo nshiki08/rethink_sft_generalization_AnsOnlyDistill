@@ -15,7 +15,9 @@
 | Unix socket のパスに作業ディレクトリを使う | パス長の上限（108 byte）を超えると ZMQ が失敗する | カーネル通信は `/tmp/aok<pid>` |
 | pandas は公式 pin に従う | `requirements.txt` に pandas が無い。放置すると導入時期で 3.x になる | `pandas==2.3.3` に固定（notebook の判断として記録） |
 | 生成した AO parquet の sha256 が環境によって変わる | parquet のメタデータ `created_by` に pyarrow の版が入る（内容は同一。pyarrow 25.0.1 と 21.0.0 で確認） | 再開時の sha256 照合は同じ公式環境（pyarrow==21.0.0）で行う。内容の同一性は `Table.equals` で確認できる |
-| セル 1 の再実行で GPU メモリが残る | 前回の公式環境カーネル（とその子プロセス）が残る | pid ファイルから前回のカーネルの process group を終了する |
+| セル 1 の再実行で GPU メモリが残る | 前回の公式環境カーネルと、別の process group で動く学習プロセス（torchrun）が残る | 両方の process group ID を pid ファイルに記録し、cmdline を確認してから終了する |
+| G4 用に torch だけ上げる | torch 2.7.1 は `sympy>=1.13.3` を要求し、公式の `sympy==1.13.1` と依存解決できない | blackwell プロファイルは sympy 1.13.3（math-verify の結果が変わらないことを全行で確認済み）。プロファイルごとの依存解決は `test_env_bootstrap.py` が確認する |
+| L4 で「torch に sm_89 が無い」 | torch 2.6.0 は sm_86 までのコードを持ち、同じ major の sm_89 で動く | アーキテクチャの判定は「同じ major で minor が実機以下」か PTX で行う |
 
 ## 学習条件
 

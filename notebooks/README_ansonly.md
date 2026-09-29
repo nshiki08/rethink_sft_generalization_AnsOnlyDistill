@@ -8,7 +8,7 @@
 1. GitHub の Fork `nshiki08/rethink_sft_generalization_AnsOnlyDistill` で `notebooks/ansonly_distillation.ipynb` を開き、「Open in Colab」または
    `https://colab.research.google.com/github/nshiki08/rethink_sft_generalization_AnsOnlyDistill/blob/<branch>/notebooks/ansonly_distillation.ipynb` を開く。
 2. ランタイム → GPU。**A100 を推奨**（公式 `requirements.txt` の torch 2.6.0 がそのまま動く）。
-   - G4（RTX PRO 6000 Blackwell, sm_120）は torch 2.6.0 が動かない。セル 1 で `ALLOW_BLACKWELL_TORCH_DEVIATION=True` にすると torch 2.7.1+cu128 を使い、公式との差として記録する
+   - G4（RTX PRO 6000 Blackwell, sm_120）は torch 2.6.0 が動かない。セル 1 で `ALLOW_BLACKWELL_TORCH_DEVIATION=True` にすると torch 2.7.1+cu128（torch の要求で sympy も 1.13.1 → 1.13.3）を使い、公式との差として記録する
    - T4 は flash-attn 2 が動かないので不可
    - GPU メモリの推定: 1.7B 約 22 GiB、4B 約 41 GiB、8B 約 79 GiB（A100 80GB では不足、G4 96GB なら収まる見込み）
 3. Colab の「シークレット」に以下を登録し、ノートブックからのアクセスを許可する。

@@ -109,7 +109,8 @@ def run_fsdp2_grad_check(nproc=1, extra_env=None, timeout=900):
 
 FSDP2_GRAD_CHECK = dict(status="skipped (GPU なし)")
 if N_GPUS >= 1:
-    FSDP2_GRAD_CHECK = run_fsdp2_grad_check(nproc=1)
+    # 公式スクリプトの export（セクション 5 で表示）と同じ環境変数で実行する（同期の違いで結果が変わる不具合を見逃さないため）
+    FSDP2_GRAD_CHECK = run_fsdp2_grad_check(nproc=1, extra_env=dict(CUDA_LAUNCH_BLOCKING="1", TORCH_NCCL_AVOID_RECORD_STREAMS="1", NCCL_DEBUG="WARN"))
     if FSDP2_GRAD_CHECK["status"] == "ok":
         _worst = max(FSDP2_GRAD_CHECK["params"], key=lambda r: r["rel"])
         print(f"FSDP2 勾配確認 (world size 1): OK。全 {len(FSDP2_GRAD_CHECK['params'])} パラメータで 0 化なし、最大相対差 {_worst['rel']:.2e} ({_worst['name']})")

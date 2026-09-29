@@ -38,7 +38,7 @@ Colab の Python は 3.13（2026-08 から）で、公式 `requirements.txt` の
 | GPU | 環境 |
 | --- | --- |
 | A100（推奨） | 公式 `requirements.txt` のまま（torch 2.6.0, flash-attn 2.7.4.post1） |
-| G4（RTX PRO 6000 Blackwell） | torch 2.6.0 が動かない。セル 1 の `ALLOW_BLACKWELL_TORCH_DEVIATION=True` で torch 2.7.1+cu128 を使い、公式との差として記録する |
+| G4（RTX PRO 6000 Blackwell） | torch 2.6.0 が動かない。セル 1 の `ALLOW_BLACKWELL_TORCH_DEVIATION=True` で torch 2.7.1+cu128（と torch が要求する sympy 1.13.3）を使い、公式との差として記録する |
 | T4 など（compute capability < 8.0） | flash-attn 2 が動かないので不可 |
 
 ## 公式 CoT 学習との条件合わせ（GPU 台数）

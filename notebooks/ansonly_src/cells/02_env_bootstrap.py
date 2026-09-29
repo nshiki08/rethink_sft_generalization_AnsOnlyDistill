@@ -35,14 +35,17 @@ _FA = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.pos
 FLASH_ATTN_VERSION = "2.7.4.post1"        # 公式 pin。両プロファイルで同じ版
 GPU_PROFILES = {
     # A100 / L4 / H100 など（compute capability 8.x, 9.x）: 公式 requirements.txt のまま
-    "official": dict(torch=["torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0"], index_url=None,
-                     flash_attn_wheel=f"{_FA}+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl", deviation=None),
+    "official": dict(torch=["torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0"], index_url=None, pin_overrides={},
+                     flash_attn_wheel=f"{_FA}+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl", cxx11abi=False, nccl=[2, 21, 5],
+                     deviation=None),
     # G4（RTX PRO 6000 Blackwell, sm_120）など compute capability 10 以上: torch 2.6.0 には sm_100/sm_120 のコードが無く動かない。
     # sm_120 に対応した最初の公式 torch は 2.7.0（cu128）。flash-attn は同じ 2.7.4.post1 の torch2.7 用 wheel（sm_120 を含む）。
+    # torch 2.7.1 は sympy>=1.13.3 を要求するので、公式の sympy==1.13.1 と両立しない（1.13.3 に上げる）。
     "blackwell": dict(torch=["torch==2.7.1+cu128", "torchvision==0.22.1+cu128", "torchaudio==2.7.1+cu128"],
-                      index_url="https://download.pytorch.org/whl/cu128",
-                      flash_attn_wheel=f"{_FA}+cu12torch2.7cxx11abiTRUE-cp312-cp312-linux_x86_64.whl",
-                      deviation="torch 2.6.0 → 2.7.1+cu128（torchvision/torchaudio も対応版）、flash-attn は同版の torch2.7 用 wheel。"
+                      index_url="https://download.pytorch.org/whl/cu128", pin_overrides={"sympy": "sympy==1.13.3"},
+                      flash_attn_wheel=f"{_FA}+cu12torch2.7cxx11abiTRUE-cp312-cp312-linux_x86_64.whl", cxx11abi=True, nccl=[2, 26, 2],
+                      deviation="torch 2.6.0 → 2.7.1+cu128（torchvision/torchaudio も対応版）、flash-attn は同版の torch2.7 用 wheel、"
+                                "sympy 1.13.1 → 1.13.3（torch 2.7.1 の要求。math-verify の照合結果はセクション 3 のゲートで確認）。"
                                 "勾配の GPU 間平均・累積・clip・state_dict 読み込みの実装は 2.6 と同じことをソースで確認済み。"
                                 "NCCL 2.21.5→2.26.2, cuBLAS 12.4→12.8 などカーネル実装は変わるので丸め誤差の範囲の差が出る"),
 }
@@ -136,21 +139,58 @@ except RuntimeError:
     OFFICIAL_DIFF_STAT, OFFICIAL_CODE_UNCHANGED = "unknown (reference commit not available)", None
     print("WARN: 参照 commit がローカルに無く差分を確認できない")
 
-# ---- 1.3 公式環境（Python 3.12 venv）の作成と公式 pin の導入 ------------------------------------------
+# ---- 1.3 前回の公式環境カーネルと学習プロセスの終了 ----------------------------------------------------
+# Colab の「セッションを再起動」やセル 1 の再実行では、前回の公式環境カーネル（GPU メモリを持っている可能性）と、
+# そこから別の process group で起動した学習プロセス（torchrun）が残る。pid ファイルに記録した process group を、
+# cmdline が期待どおりのプロセスだけ終了する（pid の再利用で無関係なプロセスを止めない。自分自身は止めない）。
+def _group_members(pgid):
+    out = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            stat = open(f"/proc/{d}/stat").read()
+            if int(stat.rsplit(")", 1)[1].split()[2]) == pgid:
+                out.append((int(d), open(f"/proc/{d}/cmdline", "rb").read().replace(b"\0", b" ").decode(errors="replace")))
+        except (OSError, IndexError, ValueError):
+            pass
+    return out
+
+
+def kill_recorded_group(pidfile, must_contain, label):
+    try:
+        pgid = int(open(pidfile).read().strip())
+    except (OSError, ValueError):
+        return
+    members = [(p, c) for p, c in _group_members(pgid) if p != os.getpid()]
+    if pgid == os.getpgid(0) or not members or not any(all(m in c for m in must_contain) for _, c in members):
+        return   # 既に終了している、または pid が別のプロセスに再利用されている
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+        print(f"前回の{label}（process group {pgid}, {len(members)} プロセス）を終了した")
+    except ProcessLookupError:
+        pass
+
+
+TRAIN_PY = f"{TRAIN_ENV_DIR}/bin/python"
+kill_recorded_group(f"{WORK_DIR}/ao-trainer.pgid", ["torch.distributed.run"], "学習プロセス")
+kill_recorded_group(f"{WORK_DIR}/ao-train-env.pid", ["ipykernel_launcher", TRAIN_ENV_DIR], "公式環境カーネル")
+
+# ---- 1.4 公式環境（Python 3.12 venv）の作成と公式 pin の導入 ------------------------------------------
 # Colab は uv 用の制約ファイルを UV_* 環境変数で指定していることがある（Colab 自身の numpy 2.x などに固定される）。公式環境には使わない
 _uv_env = {k: v for k, v in os.environ.items() if not k.startswith("UV_")}
 _uv_env["UV_CACHE_DIR"] = os.environ.get("AO_UV_CACHE_DIR", f"{WORK_DIR}/uv_cache")
 _uv_env["UV_PYTHON_INSTALL_DIR"] = f"{WORK_DIR}/uv_python"
-_uv_env["UV_LINK_MODE"] = "copy"
+# UV_LINK_MODE は既定（Linux では hardlink）。cache と venv が同じディスクなので CUDA 系 wheel を二重に置かない
 try:
     sh([sys.executable, "-m", "uv", "--version"])
 except RuntimeError:
     sh([sys.executable, "-m", "pip", "install", "-q", f"uv=={UV_VERSION}"])
 UV = [sys.executable, "-m", "uv", "--no-config"]
-TRAIN_PY = f"{TRAIN_ENV_DIR}/bin/python"
+_pins = [PROFILE["pin_overrides"].get(p.split("==")[0].split("[")[0].lower(), p) for p in PIP_PINNED + EXTRA_PIP_PACKAGES]
 
 _torch_index = os.environ.get("AO_TORCH_INDEX_URL") or PROFILE["index_url"]   # AO_TORCH_INDEX_URL はローカル（CPU）検証用
-_want = dict(python=TRAIN_PYTHON_VERSION, torch=PROFILE["torch"], index=_torch_index, pins=PIP_PINNED + EXTRA_PIP_PACKAGES + KERNEL_PACKAGES,
+_want = dict(python=TRAIN_PYTHON_VERSION, torch=PROFILE["torch"], index=_torch_index, pins=_pins + KERNEL_PACKAGES,
              flash_attn=PROFILE["flash_attn_wheel"] if GPU_CAP else None)
 _want_hash = hashlib.sha256(json.dumps(_want, sort_keys=True).encode()).hexdigest()[:16]
 _marker = f"{TRAIN_ENV_DIR}/ao_env_ok.json"
@@ -169,7 +209,7 @@ else:
     json.dump(dict(hash=_want_hash, want=_want, created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())), open(_marker, "w"), indent=2)
     print(f"公式環境を作成した: {TRAIN_ENV_DIR}（{time.time() - t0:.0f} 秒）")
 
-# ---- 1.4 公式環境の確認（Python, torch, GPU アーキテクチャ, flash-attn, 公式 trainer の import） -------------------
+# ---- 1.5 公式環境の確認（Python, torch, GPU アーキテクチャ, flash-attn, 公式 trainer の import） -------------------
 _TRAIN_ENV_VARS = {k: v for k, v in os.environ.items() if not k.startswith("UV_") and k not in ("PYTHONPATH", "PYTHONHOME", "MPLBACKEND", "VIRTUAL_ENV")}
 _TRAIN_ENV_VARS.update(PYTHONPATH=REPO_DIR, VIRTUAL_ENV=TRAIN_ENV_DIR, PATH=f"{TRAIN_ENV_DIR}/bin" + os.pathsep + os.environ.get("PATH", ""),
                        AO_WORK_DIR=WORK_DIR)
@@ -191,8 +231,13 @@ p = dict(python=platform.python_version(), torch=torch.__version__, cuda=torch.v
          nccl=list(torch.cuda.nccl.version()) if torch.cuda.is_available() else None)
 if p["cuda_available"]:
     import flash_attn, flash_attn.bert_padding  # noqa: F401
+    from flash_attn import flash_attn_func
     x = torch.randn(64, 64, device="cuda", dtype=torch.bfloat16)
     p["cuda_matmul_ok"] = bool(torch.isfinite(x @ x).all())   # その GPU 用のカーネルが無ければここで失敗する
+    q, k, v = (torch.randn(2, 128, 4, 64, device="cuda", dtype=torch.bfloat16, requires_grad=True) for _ in range(3))
+    o = flash_attn_func(q, k, v, causal=True)
+    o.float().sum().backward()                                 # flash-attn の forward / backward カーネルを GPU で実行する
+    p["flash_attn_kernel_ok"] = bool(torch.isfinite(o).all() and torch.isfinite(q.grad).all())
 import verl.trainer.fsdp_sft_trainer_ours  # noqa: F401
 import verl.model_merger.fsdp_model_merger  # noqa: F401
 print("PROBE_OK " + json.dumps(dict(probe=p, packages=vers)))
@@ -206,17 +251,32 @@ _probe = json.loads(_ok[-1][len("PROBE_OK "):])
 TORCH_PROBE, PKG_VERSIONS = _probe["probe"], _probe["packages"]
 assert TORCH_PROBE["python"].startswith(TRAIN_PYTHON_VERSION + "."), TORCH_PROBE["python"]
 if GPU_CAP:
-    _sm = f"sm_{GPU_CAP[0]}{GPU_CAP[1]}"
-    assert _sm in TORCH_PROBE["arch_list"] or any(a == f"compute_{GPU_CAP[0]}{GPU_CAP[1]}" for a in TORCH_PROBE["arch_list"]), \
-        f"torch {TORCH_PROBE['torch']} に {_sm} のコードが無い: {TORCH_PROBE['arch_list']}"
+    # 同じ major の小さい minor 向けコード（例: L4 の sm_89 で sm_86/sm_80）は動く。PTX（compute_XY）は XY <= 実機なら JIT で動く
+    def _arch_ok(arch_list, cap):
+        for a in arch_list:
+            kind, _, num = a.partition("_")
+            if not num.isdigit():
+                continue
+            major, minor = int(num[:-1]), int(num[-1])
+            if kind == "sm" and major == cap[0] and minor <= cap[1]:
+                return True
+            if kind == "compute" and (major, minor) <= tuple(cap):
+                return True
+        return False
+
+    assert _arch_ok(TORCH_PROBE["arch_list"], GPU_CAP), f"torch {TORCH_PROBE['torch']} に compute capability {GPU_CAP} 用のコードが無い: {TORCH_PROBE['arch_list']}"
     assert TORCH_PROBE.get("cuda_matmul_ok"), "GPU 上の行列積に失敗"
+    assert TORCH_PROBE.get("flash_attn_kernel_ok"), "flash-attn のカーネル実行に失敗"
+    assert TORCH_PROBE["abi"] == PROFILE["cxx11abi"], f"torch の C++ ABI {TORCH_PROBE['abi']} が flash-attn wheel（cxx11abi={PROFILE['cxx11abi']}）と合わない"
+    if TORCH_PROBE["nccl"] != PROFILE["nccl"]:
+        print(f"WARN: NCCL {TORCH_PROBE['nccl']} が想定 {PROFILE['nccl']} と異なる（記録する）")
 print("公式環境:", {k: TORCH_PROBE[k] for k in ("python", "torch", "cuda", "cap", "cudnn", "nccl")})
 print("packages:", PKG_VERSIONS)
 
 ENV_BOOTSTRAP = dict(
     kernel_python=platform.python_version(), train_python=TORCH_PROBE["python"], train_env_dir=TRAIN_ENV_DIR, train_env_hash=_want_hash,
     gpu_profile=GPU_PROFILE, gpu_profile_deviation=PROFILE["deviation"], torch_pins=PROFILE["torch"], torch_index_url=_torch_index,
-    flash_attn_version=FLASH_ATTN_VERSION, flash_attn_wheel=_want["flash_attn"], pip_pinned=PIP_PINNED + EXTRA_PIP_PACKAGES,
+    flash_attn_version=FLASH_ATTN_VERSION, flash_attn_wheel=_want["flash_attn"], pip_pinned=_pins, pin_overrides=PROFILE["pin_overrides"],
     gpus=GPUS, torch_probe=TORCH_PROBE, packages=PKG_VERSIONS, in_colab=IN_COLAB, work_dir=WORK_DIR, repo_dir=REPO_DIR,
     fork_repo=FORK_REPO_URL, fork_ref=FORK_REF, fork_commit=FORK_COMMIT, upstream_repo=UPSTREAM_REPO_URL,
     upstream_reference_commit=UPSTREAM_REFERENCE_COMMIT, upstream_fetched=UPSTREAM_FETCHED,
@@ -226,7 +286,7 @@ ENV_BOOTSTRAP_PATH = f"{RECORD_DIR}/env_bootstrap.json"
 json.dump(ENV_BOOTSTRAP, open(ENV_BOOTSTRAP_PATH, "w"), indent=2, ensure_ascii=False)
 
 
-# ---- 1.5 公式環境のカーネルを起動し、%%ao マジックを登録する --------------------------------------------
+# ---- 1.6 公式環境のカーネルを起動し、%%ao マジックを登録する --------------------------------------------
 class TrainEnvKernel:
     """公式環境（別 Python）で動く Jupyter カーネル。コードを送り、出力・エラー・停止を中継する"""
 
@@ -235,26 +295,9 @@ class TrainEnvKernel:
         self.pidfile = os.path.join(workdir, f"{name}.pid")
         self.km = self.kc = None
 
-    def _kill_previous(self):
-        # Colab のセッション再起動などで取り残された前回のカーネル（GPU メモリを持ったままの可能性）と、その子プロセスを終了する
-        try:
-            pid = int(open(self.pidfile).read().strip())
-            os.kill(pid, 0)
-        except Exception:
-            return
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except Exception:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except Exception:
-                pass
-        print(f"前回の公式環境カーネル (pid {pid}) を終了した")
-
     def start(self):
         from jupyter_client import KernelManager
         from jupyter_client.kernelspec import KernelSpecManager
-        self._kill_previous()
         spec_dir = os.path.join(self.workdir, "kernelspec", self.name)
         os.makedirs(spec_dir, exist_ok=True)
         with open(os.path.join(spec_dir, "kernel.json"), "w") as f:
@@ -263,7 +306,9 @@ class TrainEnvKernel:
         ksm.kernel_dirs = [os.path.dirname(spec_dir)]
         # IPC（Unix socket）で通信する。パス長の上限（108 byte）があるので短いパスにする
         self.km = KernelManager(kernel_name=self.name, kernel_spec_manager=ksm, transport="ipc", ip=f"/tmp/aok{os.getpid()}")
-        self.km.start_kernel(env=dict(self.env), cwd=self.cwd, start_new_session=True)   # 新しい process group（後で子プロセスごと終了できる）
+        # 新しい process group（後で子プロセスごと終了できる）。カーネルの fd 直書き出力（subprocess など）は既に中継されるのでログファイルへ
+        self._log = open(os.path.join(self.workdir, f"{self.name}.log"), "ab")
+        self.km.start_kernel(env=dict(self.env), cwd=self.cwd, start_new_session=True, stdout=self._log, stderr=self._log)
         with open(self.pidfile, "w") as f:
             f.write(str(self.km.provisioner.pid if getattr(self.km, "provisioner", None) else self.km.kernel.pid))
         self.kc = self.km.client()
@@ -280,32 +325,32 @@ class TrainEnvKernel:
         msg_id = self.kc.execute(code, store_history=False, allow_stdin=False)
         error, interrupted = None, False
         while True:
-            try:
-                msg = self.kc.get_iopub_msg(timeout=1)
-            except queue.Empty:
-                if not self.alive():
-                    raise RuntimeError("公式環境カーネルが終了した（メモリ不足など）。セル 1（環境構築）から実行し直す")
-                continue
-            except KeyboardInterrupt:
-                interrupted = True            # 停止ボタン → 公式環境カーネルにも割り込みを送り、終了を待つ
-                self.km.interrupt_kernel()
-                continue
-            if msg.get("parent_header", {}).get("msg_id") != msg_id:
-                continue
-            t, c = msg["msg_type"], msg["content"]
-            if t == "stream":
-                (sys.stderr if c["name"] == "stderr" else sys.stdout).write(c["text"])
-            elif t in ("display_data", "execute_result"):
+            try:   # 停止ボタン（KeyboardInterrupt）がループのどこで届いても公式環境カーネルに割り込みを送り、終了を待つ
                 try:
-                    from IPython.display import publish_display_data
-                    publish_display_data(c["data"], c.get("metadata", {}))
-                except Exception:
-                    print(c["data"].get("text/plain", ""))
-            elif t == "error":
-                error = c
-                sys.stderr.write("\n".join(c["traceback"]) + "\n")
-            elif t == "status" and c["execution_state"] == "idle":
-                break
+                    msg = self.kc.get_iopub_msg(timeout=1)
+                except queue.Empty:
+                    if not self.alive():
+                        raise RuntimeError("公式環境カーネルが終了した（メモリ不足など）。セル 1（環境構築）から実行し直す")
+                    continue
+                if msg.get("parent_header", {}).get("msg_id") != msg_id:
+                    continue
+                t, c = msg["msg_type"], msg["content"]
+                if t == "stream":
+                    (sys.stderr if c["name"] == "stderr" else sys.stdout).write(c["text"])
+                elif t in ("display_data", "execute_result"):
+                    try:
+                        from IPython.display import publish_display_data
+                        publish_display_data(c["data"], c.get("metadata", {}))
+                    except Exception:
+                        print(c["data"].get("text/plain", ""))
+                elif t == "error":
+                    error = c
+                    sys.stderr.write("\n".join(c["traceback"]) + "\n")
+                elif t == "status" and c["execution_state"] == "idle":
+                    break
+            except KeyboardInterrupt:
+                interrupted = True
+                self.km.interrupt_kernel()
         sys.stdout.flush(), sys.stderr.flush()
         if interrupted:
             raise KeyboardInterrupt

@@ -64,4 +64,28 @@ try:
     raise SystemExit("error was not propagated")
 except RuntimeError as e:
     assert "expected test error" in str(e), e
+
+# ---- 各 GPU プロファイルの依存解決（GPU 不要）: Colab と同じ Linux x86_64 / Python 3.12 / CUDA 版 torch の index で pin が解けるか
+import subprocess, tempfile
+for prof_name, prof in g["GPU_PROFILES"].items():
+    pins = [prof["pin_overrides"].get(p.split("==")[0].split("[")[0].lower(), p) for p in g["PIP_PINNED"]] + g["KERNEL_PACKAGES"]
+    req = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+    req.write("\n".join(prof["torch"] + pins) + "\n"); req.close()
+    idx = ["--index-url", prof["index_url"], "--extra-index-url", "https://pypi.org/simple", "--index-strategy", "unsafe-best-match"] if prof["index_url"] else []
+    r = subprocess.run(g["UV"] + ["pip", "compile", "--quiet", "--python-version", "3.12", "--python-platform", "x86_64-manylinux_2_28", req.name] + idx,
+                       capture_output=True, text=True, env=g["_uv_env"])
+    assert r.returncode == 0, f"profile {prof_name}: pins do not resolve\n{r.stderr[-2000:]}"
+    lock = {l.split("==")[0]: l.split("==")[1].split()[0] for l in r.stdout.splitlines() if "==" in l and not l.startswith("#")}
+    print(f"profile {prof_name}: resolves (torch {lock.get('torch')}, sympy {lock.get('sympy')}, numpy {lock.get('numpy')}, nvidia-nccl-cu12 {lock.get('nvidia-nccl-cu12')})")
+
+# ---- セル 1 の再実行: 前回の公式環境カーネルと、残った学習プロセス（模擬）を終了する
+fake = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)", "torch.distributed.run"], start_new_session=True)
+open(f"{g['WORK_DIR']}/ao-trainer.pgid", "w").write(str(fake.pid))
+old_kernel = g["AO_KERNEL"]
+exec(compile(open(os.path.join(SRC, "cells", "02_env_bootstrap.py")).read(), "02_env_bootstrap.py", "exec"), g)
+time.sleep(2)
+assert fake.poll() is not None, "leftover trainer process group was not killed"
+assert not old_kernel.alive(), "previous official-env kernel was not killed"
+g["AO_KERNEL"].run("print('new kernel ok')")
+print("re-run of cell 1 killed the previous kernel and trainer OK")
 print("ENV BOOTSTRAP TEST PASSED")

@@ -14,6 +14,7 @@
 | Colab の uv 設定がそのまま使われる | Colab は `UV_*` で制約ファイルを指定していることがあり、Colab 既定の版に固定される | 公式環境の作成では `UV_*` を外し `--no-config` |
 | Unix socket のパスに作業ディレクトリを使う | パス長の上限（108 byte）を超えると ZMQ が失敗する | カーネル通信は `/tmp/aok<pid>` |
 | pandas は公式 pin に従う | `requirements.txt` に pandas が無い。放置すると導入時期で 3.x になる | `pandas==2.3.3` に固定（notebook の判断として記録） |
+| 生成した AO parquet の sha256 が環境によって変わる | parquet のメタデータ `created_by` に pyarrow の版が入る（内容は同一。pyarrow 25.0.1 と 21.0.0 で確認） | 再開時の sha256 照合は同じ公式環境（pyarrow==21.0.0）で行う。内容の同一性は `Table.equals` で確認できる |
 | セル 1 の再実行で GPU メモリが残る | 前回の公式環境カーネル（とその子プロセス）が残る | pid ファイルから前回のカーネルの process group を終了する |
 
 ## 学習条件

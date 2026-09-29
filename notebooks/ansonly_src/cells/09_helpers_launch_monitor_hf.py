@@ -1,5 +1,5 @@
 # @title 6-a. 起動・監視・HF 転送・再開のヘルパー（追加処理はすべてここ。公式 trainer は subprocess で無変更のまま実行）
-import subprocess, threading, time, json, os, re, glob, shutil, zipfile, hashlib, random, datetime, io, sys, signal
+import subprocess, threading, time, json, os, re, glob, shutil, zipfile, hashlib, random, datetime, io, sys, signal, fnmatch
 import numpy as np
 from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
@@ -8,6 +8,16 @@ HF_API = HfApi() if HF_LOGGED_IN else None
 
 def now_iso():
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def require_training_env(n_gpus=None):
+    """学習（試走・本学習・再開）を始める前の環境条件: GPU・flash-attn・1 GPU の FSDP2 勾配確認"""
+    n_gpus = n_gpus or N_GPUS
+    assert N_GPUS >= 1 and FLASH_ATTN_OK, "GPU と flash-attn が必要"
+    if REQUIRE_FSDP2_GRAD_CHECK and n_gpus == 1:
+        assert FSDP2_GRAD_CHECK.get("status") == "ok", (
+            f"1 GPU の FSDP2 勾配確認（セクション 2）が OK ではない: {FSDP2_GRAD_CHECK.get('status')}。"
+            "world size 1 の NCCL AVG で勾配が壊れる既知の報告があるため学習を開始しない")
 
 
 def hash_file(path, with_sha256=True):
@@ -28,20 +38,26 @@ def git_blob_sha1(path):
 
 
 # ---- checkpoint の完全性 -----------------------------------------------------------------------
-def checkpoint_expected_files(world_size):
+OPTIM_FILE_PATTERN = "optim_world_size_*"
+
+
+def checkpoint_expected_files(world_size, content="full"):
+    """content="model_only" は HF へ重みだけ送った checkpoint（optimizer 状態なし。分析・変換用で再開には使えない）"""
     files = []
     for r in range(world_size):
-        files += [f"model_world_size_{world_size}_rank_{r}.pt", f"optim_world_size_{world_size}_rank_{r}.pt", f"extra_state_world_size_{world_size}_rank_{r}.pt"]
+        files += [f"model_world_size_{world_size}_rank_{r}.pt", f"extra_state_world_size_{world_size}_rank_{r}.pt"]
+        if content == "full":
+            files.append(f"optim_world_size_{world_size}_rank_{r}.pt")
     files += ["fsdp_config.json", "data.pt", "huggingface/config.json", "huggingface/tokenizer_config.json"]
     return files
 
 
-def checkpoint_is_complete(ckpt_dir, world_size, prev_sizes=None, require_stable=True):
+def checkpoint_is_complete(ckpt_dir, world_size, prev_sizes=None, require_stable=True, content="full"):
     """必要ファイルの存在・非空・torch.save(zip) の完全性・tracker・（連続 2 回のスキャンで）サイズ不変 を確認する。
     ディレクトリの存在や latest tracker だけでは完了と判断しない。"""
     step = int(re.search(r"global_step_(\d+)", ckpt_dir).group(1))
     sizes = {}
-    for rel in checkpoint_expected_files(world_size):
+    for rel in checkpoint_expected_files(world_size, content):
         p = os.path.join(ckpt_dir, rel)
         if not os.path.isfile(p) or os.path.getsize(p) == 0:
             return False, sizes
@@ -66,7 +82,13 @@ def checkpoint_is_complete(ckpt_dir, world_size, prev_sizes=None, require_stable
     return True, sizes
 
 
-def build_manifest(spec, step, ckpt_dir, with_sha256=None):
+def checkpoint_content_for(spec, step):
+    """HF へ送る内容: 再開用 step（upload_full_steps）は optimizer 状態込み、それ以外は重みのみ。旧版の spec は全 step を full とする"""
+    full = spec.get("upload_full_steps")
+    return "full" if full is None or step in full else "model_only"
+
+
+def build_manifest(spec, step, ckpt_dir, with_sha256=None, content="full"):
     with_sha256 = CKPT_MANIFEST_SHA256 if with_sha256 is None else with_sha256
     files = []
     for root, _, fs in os.walk(ckpt_dir):
@@ -75,12 +97,14 @@ def build_manifest(spec, step, ckpt_dir, with_sha256=None):
             rel = os.path.relpath(p, ckpt_dir)
             if rel in ("ao_ckpt_manifest.json", "ao_upload_verified.json"):
                 continue
+            if content == "model_only" and fnmatch.fnmatch(rel, OPTIM_FILE_PATTERN):
+                continue
             sha1, sha256 = hash_file(p, with_sha256=with_sha256)
             ent = dict(path=rel, size=os.path.getsize(p), git_blob_sha1=sha1)
             if sha256:
                 ent["sha256"] = sha256
             files.append(ent)
-    manifest = dict(run_id=spec["run_id"], step=step, world_size=spec["n_gpus"], files=files, total_bytes=sum(f["size"] for f in files),
+    manifest = dict(run_id=spec["run_id"], step=step, world_size=spec["n_gpus"], content=content, files=files, total_bytes=sum(f["size"] for f in files),
                     run_config=spec, created_at=now_iso(), fork_commit=FORK_COMMIT, data_sha256=spec["data_sha256"], base_revision=spec["base_revision"])
     with open(os.path.join(ckpt_dir, "ao_ckpt_manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
@@ -127,12 +151,14 @@ def upload_checkpoint(spec, step, ckpt_dir, log=print):
         return dict(status="collision_remote_complete", path_in_repo=pir)
     if remote:
         log(f"{pir} に未完了の転送が残っている。同じ step を再転送する")
-    manifest = build_manifest(spec, step, ckpt_dir)
+    content = checkpoint_content_for(spec, step)
+    manifest = build_manifest(spec, step, ckpt_dir, content=content)
+    ignore = ["ao_upload_verified.json"] + ([OPTIM_FILE_PATTERN] if content == "model_only" else [])
     last_err = None
     for attempt in range(5):
         try:
             info = HF_API.upload_folder(folder_path=ckpt_dir, path_in_repo=pir, repo_id=HF_CKPT_REPO_ID, repo_type="model",
-                                        commit_message=f"{spec['run_id']} global_step_{step}", ignore_patterns=["ao_upload_verified.json"])
+                                        commit_message=f"{spec['run_id']} global_step_{step} ({content})", ignore_patterns=ignore)
             break
         except Exception as e:  # noqa
             last_err = e
@@ -145,15 +171,15 @@ def upload_checkpoint(spec, step, ckpt_dir, log=print):
     if mism:
         log(f"verify failed for {pir}: {mism[:5]}")
         return dict(status="verify_failed", commit=info.oid, mismatches=mism, path_in_repo=pir, duration_sec=time.time() - t0)
-    marker = dict(run_id=spec["run_id"], step=step, folder_commit=info.oid, verified_at=now_iso(), n_files=len(manifest["files"]),
+    marker = dict(run_id=spec["run_id"], step=step, content=content, folder_commit=info.oid, verified_at=now_iso(), n_files=len(manifest["files"]),
                   total_bytes=manifest["total_bytes"], world_size=spec["n_gpus"], total_steps=spec["total_steps"])
     with open(os.path.join(ckpt_dir, "ao_upload_verified.json"), "w") as f:
         json.dump(marker, f, indent=2)
     info2 = HF_API.upload_file(path_or_fileobj=os.path.join(ckpt_dir, "ao_upload_verified.json"), path_in_repo=f"{pir}/ao_upload_verified.json",
                                repo_id=HF_CKPT_REPO_ID, repo_type="model", commit_message=f"{spec['run_id']} global_step_{step} verified")
     dur = time.time() - t0
-    log(f"uploaded+verified {pir} ({manifest['total_bytes'] / 1e9:.2f} GB, {dur:.0f}s) commit={info.oid[:10]} marker={info2.oid[:10]}")
-    return dict(status="verified", commit=info.oid, marker_commit=info2.oid, path_in_repo=pir, total_bytes=manifest["total_bytes"], duration_sec=dur,
+    log(f"uploaded+verified {pir} [{content}] ({manifest['total_bytes'] / 1e9:.2f} GB, {dur:.0f}s) commit={info.oid[:10]} marker={info2.oid[:10]}")
+    return dict(status="verified", content=content, commit=info.oid, marker_commit=info2.oid, path_in_repo=pir, total_bytes=manifest["total_bytes"], duration_sec=dur,
                 url=f"https://huggingface.co/{HF_CKPT_REPO_ID}/tree/{info2.oid}/{pir}")
 
 
@@ -430,6 +456,8 @@ def list_hf_checkpoints(run_id):
             except Exception as e:  # noqa
                 row["complete"] = False
                 row["marker_error"] = str(e)[:200]
+        row.setdefault("content", "full")   # 旧版のマーカーには content が無い（全ファイルを送っていた）
+        row["resumable"] = row["complete"] and row["content"] == "full"
         rows.append(row)
     return rows
 
@@ -463,10 +491,10 @@ def download_hf_checkpoint(run_id, step, revision=None):
     # 公式の latest tracker も揃えておく（resume_path モードでは使われないが、ディレクトリ構成を学習時と同じにする）
     with open(os.path.join(os.path.dirname(local), "latest_checkpointed_iteration.txt"), "w") as f:
         f.write(str(step))
-    ok, _ = checkpoint_is_complete(local, manifest["world_size"], require_stable=False)
+    ok, _ = checkpoint_is_complete(local, manifest["world_size"], require_stable=False, content=manifest.get("content", "full"))
     assert ok, "必要ファイル（model/optim/extra の各 rank shard, data.pt, fsdp_config.json, huggingface/）が揃っていない"
     manifest["folder_commit"] = marker.get("folder_commit")
-    print(f"downloaded {pir} @ {revision[:10]} -> {local} ({manifest['total_bytes'] / 1e9:.2f} GB, verified against manifest)")
+    print(f"downloaded {pir} [{manifest.get('content', 'full')}] @ {revision[:10]} -> {local} ({manifest['total_bytes'] / 1e9:.2f} GB, verified against manifest)")
     return local, manifest, revision
 
 
@@ -527,6 +555,11 @@ def check_resume_compatibility(manifest, n_gpus=None):
         warnings_.append(f"現在の MAX_LENGTH {MAX_LENGTH} と保存時 {saved.get('max_length')} が異なる。再開は保存時の設定を使う")
     if not FLASH_ATTN_OK and n_gpus > 0:
         problems.append("flash-attn が使えない")
+    if manifest.get("content", "full") != "full":
+        problems.append("この checkpoint は重みのみ（optimizer 状態なし）。再開には使えない")
+    if saved.get("gpu_profile", "official") != GPU_PROFILE:
+        problems.append(f"GPU プロファイル（torch の版）が保存時と異なる: saved={saved.get('gpu_profile', 'official')} now={GPU_PROFILE}。"
+                        "同じ種類の GPU（A100 なら A100）で再開する")
     return problems, warnings_
 
 
@@ -566,18 +599,20 @@ def build_resume_spec(manifest, local_ckpt_path):
 
 def resume_run_from_hf(run_id, step="latest", kill_after_step=None, upload=None):
     """HF の完了済み checkpoint から新プロセスで再開する。未保存 step は再実行になる"""
+    require_training_env(None)
     rows = list_hf_checkpoints(run_id)
-    complete = [r for r in rows if r["complete"]]
+    complete = [r for r in rows if r["resumable"]]   # optimizer 状態込みで転送・検証済みのものだけが再開候補
     print(f"HF checkpoints for {run_id}:")
     for r in rows:
-        print(f"  step {r['step']:6d} complete={r['complete']} files={r['n_files']} commit={str(r.get('folder_commit', ''))[:10]} verified_at={r.get('verified_at', '')}")
+        print(f"  step {r['step']:6d} complete={r['complete']} content={r['content']} resumable={r['resumable']} files={r['n_files']} "
+              f"commit={str(r.get('folder_commit', ''))[:10]} verified_at={r.get('verified_at', '')}")
     if not complete:
-        raise SystemExit("完了済み checkpoint が無い。再開できない（不完全な転送は候補にしない）")
+        raise SystemExit("再開できる checkpoint（optimizer 状態込みで転送・検証済み）が無い。不完全な転送や重みだけの step は候補にしない")
     if step == "latest":
         chosen = max(r["step"] for r in complete)
     else:
         chosen = int(step)
-        assert chosen in [r["step"] for r in complete], f"step {chosen} は完了済みではない"
+        assert chosen in [r["step"] for r in complete], f"step {chosen} は再開できる checkpoint ではない（未完了、または重みのみ）"
         newer = [r["step"] for r in complete if r["step"] > chosen]
         if newer:
             raise SystemExit(f"step {chosen} より新しい完了済み step {newer} がある。古い step から再開すると新しい step を上書きする恐れがあるので拒否する。"
@@ -602,13 +637,18 @@ def merge_checkpoint(run_id, step, local_ckpt=None):
     """python -m verl.model_merger merge --backend fsdp（README の手順）で HF 形式へ変換する。戻り値: 変換先ディレクトリ"""
     ckpt = local_ckpt or f"{CKPT_DIR}/{run_id}/global_step_{step}"
     ok = False
+
+    def _content(d):
+        mp = os.path.join(d, "ao_ckpt_manifest.json")
+        return json.load(open(mp)).get("content", "full") if os.path.isfile(mp) else "full"
+
     if os.path.isfile(os.path.join(ckpt, "fsdp_config.json")):
         world = json.load(open(os.path.join(ckpt, "fsdp_config.json")))["world_size"]
-        ok, _ = checkpoint_is_complete(ckpt, world, require_stable=False)
-    if not ok:   # ローカルに無い、または書きかけ → HF の完了済み checkpoint を取得する
+        ok, _ = checkpoint_is_complete(ckpt, world, require_stable=False, content=_content(ckpt))
+    if not ok:   # ローカルに無い、または書きかけ → HF の完了済み checkpoint（重みのみでも変換はできる）を取得する
         ckpt, _, _ = download_hf_checkpoint(run_id, step)
         world = json.load(open(os.path.join(ckpt, "fsdp_config.json")))["world_size"]
-        ok, _ = checkpoint_is_complete(ckpt, world, require_stable=False)
+        ok, _ = checkpoint_is_complete(ckpt, world, require_stable=False, content=_content(ckpt))
     assert ok, f"checkpoint が不完全: {ckpt}"
     target = f"{WORK_DIR}/merged/{run_id}/merged_step{step}"
     if os.path.isfile(os.path.join(target, "config.json")) and glob.glob(os.path.join(target, "*.safetensors")):

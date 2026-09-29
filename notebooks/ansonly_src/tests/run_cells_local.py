@@ -2,10 +2,11 @@
 
 Usage: python notebooks/ansonly_src/tests/run_cells_local.py [up_to_cell_prefix]
 Work dir: $AO_TEST_WORK_DIR (default ~/.cache/ao_nb_test). Data and the tokenizer are downloaded there; nothing is written to the repo.
-Cells executed: 01_auth, 02_config, 03_section1, (04 skipped: uses real repo dir instead), 05_section3_data,
-06_helpers_runspec, 07_section4_length_mask, 08_section5_dryrun, 09_helpers (definitions only), 10..15 (skip branches).
+Run it with a Python that has the official pins installed (CPU torch is fine); that interpreter plays the "official env kernel".
+Cells executed: 01_auth, (02 env bootstrap replaced by a stub ENV_BOOTSTRAP for this interpreter), 03_config, 04 .. 15 (skip branches).
+The bootstrap cell itself is tested by test_env_bootstrap.py.
 """
-import os, sys, glob, json, time, types, traceback
+import os, sys, glob, json, time, platform, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.dirname(HERE)                                   # notebooks/ansonly_src
@@ -19,7 +20,7 @@ up_to = sys.argv[1] if len(sys.argv) > 1 else "99"
 g = globals()   # cells run in the real __main__ so multiprocessing (fork) can resolve cell-defined functions
 cells = sorted(glob.glob(os.path.join(SRC, "cells", "*.py")))
 
-# stub: make get_base_model_local() return the local tokenizer/config dir (no 3.4GB download)
+
 def stub_model_dir():
     """tokenizer と config だけを取得する（重みは取得しない）"""
     d = os.path.join(TEST_WORK, "tok", "Qwen3-1.7B-Base")
@@ -28,6 +29,30 @@ def stub_model_dir():
         snapshot_download("Qwen/Qwen3-1.7B-Base", revision=g["MODEL_INFO"]["base_revision"], local_dir=d,
                           allow_patterns=["*.json", "*.txt", "merges.txt"])
     return d
+
+
+def stub_env_bootstrap():
+    """セル 1 の代わり: この Python を公式環境カーネルとみなした ENV_BOOTSTRAP"""
+    import importlib
+    vers = {}
+    for m in ("torch", "transformers", "numpy", "ray", "math_verify", "huggingface_hub", "pyarrow"):
+        try:
+            vers[m] = getattr(importlib.import_module(m), "__version__", "n/a")
+        except ImportError:
+            vers[m] = "not installed"
+    import torch
+    return dict(
+        kernel_python=platform.python_version(), train_python=platform.python_version(), train_env_dir=sys.prefix, train_env_hash="local",
+        gpu_profile="official", gpu_profile_deviation=None, torch_pins=["torch==2.6.0"], torch_index_url=None,
+        flash_attn_version="2.7.4.post1", flash_attn_wheel=None, pip_pinned=[], gpus=[],
+        torch_probe=dict(python=platform.python_version(), torch=torch.__version__, cuda=None, cuda_available=False, arch_list=[], cap=None, cudnn=None, nccl=None),
+        packages=vers, in_colab=False, work_dir=os.path.join(TEST_WORK, "ao_work_local"), repo_dir=REPO,
+        fork_repo="https://github.com/nshiki08/rethink_sft_generalization_AnsOnlyDistill", fork_ref="local",
+        fork_commit=subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip(),
+        upstream_repo="https://github.com/Nebularaid2000/rethink_sft_generalization",
+        upstream_reference_commit="71a442ea8f0adc4a1df4529d3c43393ac6e504fd", upstream_fetched=True,
+        official_code_unchanged=True, official_diff_stat="",
+    )
 
 
 def run(path):
@@ -39,31 +64,16 @@ def run(path):
     print(f"{'#' * 30} DONE {name} in {time.time() - t0:.1f}s", flush=True)
 
 
-for H_path in list(cells):
-    path, name = H_path, os.path.basename(H_path)
+for path in cells:
+    name = os.path.basename(path)
     if name[:2] > up_to:
         break
-    if name.startswith("04_"):
-        # replace clone/env cell with local equivalents
-        g.update(dict(REPO_DIR=REPO, FORK_COMMIT=os.popen(f"git -C {REPO} rev-parse HEAD").read().strip(), UPSTREAM_FETCHED=True,
-                      OFFICIAL_DIFF_STAT="", OFFICIAL_CODE_UNCHANGED=True, GPUS=[], N_GPUS=0, TORCH_PROBE={}, FLASH_ATTN_OK=False,
-                      PKG_VERSIONS={}, ENV_RECORD={"local_stub": True}))
-        import shutil, subprocess
-        g["sh"] = lambda cmd, cwd=None, check=True, capture=True, env=None: subprocess.run(cmd, cwd=cwd, shell=isinstance(cmd, str), capture_output=True, text=True).stdout.strip()
-        print("\n[stub] 04 skipped: REPO_DIR =", REPO)
-        continue
     if name.startswith("02_"):
-        run(path)
-        g["WORK_DIR"] = os.path.join(TEST_WORK, "ao_work_local")
-        for k in ("REPO_DIR", "DATA_DIR", "MODELS_DIR", "CKPT_DIR", "LOG_DIR", "RECORD_DIR"):
-            g[k] = os.path.join(g["WORK_DIR"], {"REPO_DIR": "repo", "DATA_DIR": "data", "MODELS_DIR": "models", "CKPT_DIR": "ckpt", "LOG_DIR": "log", "RECORD_DIR": "records"}[k])
-            os.makedirs(g[k], exist_ok=True)
-        g["REPO_DIR"] = REPO
-        continue
-    if name.startswith("06_"):
-        run(path)
-        g["get_base_model_local"] = stub_model_dir
+        g["ENV_BOOTSTRAP"] = stub_env_bootstrap()
+        print("\n[stub] 02 env bootstrap replaced: this interpreter =", sys.executable)
         continue
     run(path)
+    if name.startswith("06_"):
+        g["get_base_model_local"] = stub_model_dir
 
-print("\nLOCAL RUN FINISHED. keys:", [k for k in ("AO_DATA_READY", "MASK_CHECK_OK", "MAX_LENGTH", "AUTO_FIT_MAX_LENGTH") if k in g], {k: g.get(k) for k in ("AO_DATA_READY", "MASK_CHECK_OK", "MAX_LENGTH", "AUTO_FIT_MAX_LENGTH")})
+print("\nLOCAL RUN FINISHED.", {k: g.get(k) for k in ("AO_DATA_READY", "MASK_CHECK_OK", "MAX_LENGTH", "AUTO_FIT_MAX_LENGTH", "VIEW_CHECK_OK")})

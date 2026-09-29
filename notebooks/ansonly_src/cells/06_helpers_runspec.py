@@ -149,6 +149,8 @@ def residual_differences(n_gpus, max_length, emulated):
         out.append(f"ログの train/loss: adv-only では token 平均が fp32 で計算され、vanilla では bf16。{OFFICIAL_WORLD_SIZE}/{n_gpus} 倍に戻した値は"
                    "公式ログと micro batch ごとの bf16 丸め 1 回分（最大 0.4% 程度）ずれ得る。勾配は影響を受けない")
     out.append("GPU の種類: 公式は H200。Colab の GPU では選ばれる CUDA カーネルが変わり、丸め誤差が変わる")
+    if GPU_PROFILE_DEVIATION:
+        out.append(f"torch の版（GPU プロファイル {GPU_PROFILE}）: {GPU_PROFILE_DEVIATION}")
     out.append("flash-attn の backward は非決定的（公式の学習も同じ条件）")
     if int(max_length) != int(OFFICIAL_MAX_LENGTH):
         out.append(f"data.max_length {max_length}（公式 {OFFICIAL_MAX_LENGTH}）: padding の量だけが変わる。padding は loss_mask と attention mask で除外されるので"
@@ -331,8 +333,11 @@ def build_run_spec(kind, lr, epochs, data_path, data_sha256, n_rows, max_length,
     upload_policy = upload_policy or HF_UPLOAD_STEPS
     if upload_policy == "all":
         _uploads = list(_saves)
+        _full = list(_saves)
     else:   # 公開 CoT 学生と同じ step + 再開用の間隔 + 最終 step
         _uploads = sorted(s for s in _saves if s in COT_PUBLIC_STEPS or s % RESUME_CKPT_EVERY == 0 or s == total_steps)
+        # 再開用（optimizer 状態込み）は RESUME_CKPT_EVERY の倍数と最終 step。それ以外（公開 CoT と同じ分析用 step）は model_only なら重みだけ送る
+        _full = _uploads if HF_ANALYSIS_STEP_CONTENT == "full" else [s for s in _uploads if s % RESUME_CKPT_EVERY == 0 or s == total_steps]
     residual = residual_differences(n_gpus, max_length, view["enabled"])
     if n_gpus != OFFICIAL_WORLD_SIZE and not view["enabled"]:
         residual = [f"【再現無効】micro batch 構成と勾配の大きさ（{OFFICIAL_WORLD_SIZE / n_gpus:g} 倍）が公式 {OFFICIAL_WORLD_SIZE} GPU と異なる"] + residual
@@ -343,7 +348,8 @@ def build_run_spec(kind, lr, epochs, data_path, data_sha256, n_rows, max_length,
         dataset_repo=DATASET_REPO, dataset_revision=DATASET_REVISION, target_style=AO_TARGET_STYLE, max_length=int(max_length),
         official_max_length=OFFICIAL_MAX_LENGTH, tbs=tbs, micro_bsz=micro, n_gpus=n_gpus, grad_accum_micro_batches=(tbs // n_gpus) // micro,
         steps_per_epoch=spe, total_steps=total_steps, warmup_steps=warmup, save_freq=int(save_freq),
-        expected_save_steps=_saves, upload_steps=_uploads, upload_policy=upload_policy,
+        expected_save_steps=_saves, upload_steps=_uploads, upload_full_steps=_full, upload_policy=upload_policy,
+        gpu_profile=GPU_PROFILE, gpu_profile_deviation=GPU_PROFILE_DEVIATION,
         overrides=ov, changes_vs_official=changes, env=env, official_script=OFFICIAL["path"], module=OFFICIAL["module"],
         fork_commit=FORK_COMMIT, upstream_reference_commit=UPSTREAM_REFERENCE_COMMIT, keep_official_env_vars=KEEP_OFFICIAL_ENV_VARS,
         resume_from_path=resume_from_path, total_training_steps_override=total_training_steps, note=extra_note,
@@ -367,7 +373,10 @@ def print_run_spec(spec):
         print(f"  *** 公式 {spec['official_world_size']} GPU の再現: OFF。micro batch 構成と勾配の大きさが公式と異なる ***")
     print(f"  global batch={spec['tbs']} micro/gpu={spec['micro_bsz']} grad-accum micro-batches/step={spec['grad_accum_micro_batches']}")
     print(f"  steps/epoch={spec['steps_per_epoch']} total_steps={spec['total_steps']} warmup={spec['warmup_steps']} save_freq={spec['save_freq']} -> saves at {spec['expected_save_steps']}")
-    print(f"  HF へ転送する step（{spec['upload_policy']}）: {spec['upload_steps']}。それ以外はローカルで保存完了後に削除（再開候補にならない）")
+    _full = spec.get("upload_full_steps", spec["upload_steps"])
+    _light = [x for x in spec["upload_steps"] if x not in _full]
+    print(f"  HF へ転送する step（{spec['upload_policy']}）: optimizer 状態込み（再開可）{_full}"
+          + (f"、重みのみ（分析用・再開不可）{_light}" if _light else "") + "。それ以外はローカルで保存完了後に削除")
     print("  公式スクリプトとの差分:")
     for c in spec["changes_vs_official"]:
         print(f"    {c['key']}: {c['official']} -> {c['new']}   [{c['reason']}]")

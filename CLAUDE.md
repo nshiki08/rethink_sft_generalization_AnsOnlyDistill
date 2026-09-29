@@ -19,9 +19,11 @@ AO 学生 = 教師 Qwen3-32B の最終回答 `\boxed{...}` だけを target に�
 
 ```bash
 python notebooks/ansonly_src/build_nb.py                       # ipynb を再生成
-python notebooks/ansonly_src/tests/run_cells_local.py 08        # CPU でセル 1〜5 を実行
+python notebooks/ansonly_src/tests/run_cells_local.py 08        # CPU で設定〜セル 5 を実行（公式 pin の Python）
 python notebooks/ansonly_src/tests/test_launch_monitor.py       # 起動・監視・再開の検証
 ```
+
+Colab のカーネルは Python 3.13 で公式 pin が入らない。セル 1 が Python 3.12 の公式環境とその Jupyter カーネルを作り、設定セル以降（`%%ao`）はそこで動く。詳細は environment.md。
 
 ## docs（必要なときに読む）
 

@@ -5,7 +5,7 @@ TRIAL_RESULTS = {}
 if RUN_MODE != "trial":
     print("RUN_MODE != 'trial' なのでスキップ")
 else:
-    assert N_GPUS >= 1 and FLASH_ATTN_OK, "GPU と flash-attn が必要"
+    require_training_env()
     assert AO_DATA_READY, "AO データが未確定（セクション 3 のゲート）。試走でも同じデータ条件を使う"
     # 試走データ: AO parquet の先頭 TRIAL_NUM_ROWS 行（行順維持）。本学習と混ざらないよう別ファイル・別 run_id
     _trial_rows = (TRIAL_NUM_ROWS // OFFICIAL_TBS) * OFFICIAL_TBS

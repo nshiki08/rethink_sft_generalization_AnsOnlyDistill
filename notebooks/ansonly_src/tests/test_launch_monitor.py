@@ -18,13 +18,17 @@ def run_cell(name):
     exec(compile(src, name, "exec"), g)
 
 
-run_cell("02_config.py")
+ENV_BOOTSTRAP = dict(in_colab=False, work_dir=os.path.join(TEST_WORK, "ao_work_launchtest"), repo_dir=REPO)
+run_cell("03_config.py")
 WORK_DIR = os.path.join(TEST_WORK, "ao_work_launchtest")
 shutil.rmtree(WORK_DIR, ignore_errors=True)
 REPO_DIR, DATA_DIR, MODELS_DIR, CKPT_DIR, LOG_DIR, RECORD_DIR = REPO, f"{WORK_DIR}/data", f"{WORK_DIR}/models", f"{WORK_DIR}/ckpt", f"{WORK_DIR}/log", f"{WORK_DIR}/records"
 for d in (DATA_DIR, MODELS_DIR, CKPT_DIR, LOG_DIR, RECORD_DIR):
     os.makedirs(d, exist_ok=True)
 FORK_COMMIT = "deadbeef"; N_GPUS = 1; HF_LOGGED_IN = False; HF_ACCOUNT_NAME = None; FLASH_ATTN_OK = True
+GPU_PROFILE, GPU_PROFILE_DEVIATION = "official", None
+FORK_REPO_URL = "https://github.com/nshiki08/rethink_sft_generalization_AnsOnlyDistill"; UPSTREAM_REFERENCE_COMMIT = "71a442ea8f0adc4a1df4529d3c43393ac6e504fd"
+FSDP2_GRAD_CHECK = dict(status="ok")
 OFFICIAL_CODE_UNCHANGED = True; ENV_RECORD = {}; AO_AUDIT_SUMMARY = {}; LENGTH_RECORD = {}
 
 
@@ -60,7 +64,18 @@ print("hydra_value/fmt_lr OK")
 spec = build_run_spec("trial", 5e-5, 3, data_path=AO_PARQUET, data_sha256=AO_SHA256, n_rows=512, max_length=1536, save_freq=3, run_id="trial-launchtest", upload_policy="all")
 assert spec["upload_steps"] == [3, 6]
 spec_c = build_run_spec("baseline", 5e-5, 8, data_path=AO_PARQUET, data_sha256=AO_SHA256, n_rows=20480, max_length=1536, save_freq=10, run_id="x")
-assert spec_c["upload_steps"] == [10, 20, 40, 80, 120, 160, 200, 240, 280, 320, 360, 400, 440, 480, 520, 560, 600, 640], spec_c["upload_steps"]
+assert spec_c["upload_steps"] == [10, 20, 40, 80, 160, 240, 320, 400, 480, 560, 640], spec_c["upload_steps"]
+assert spec_c["upload_full_steps"] == [80, 160, 240, 320, 400, 480, 560, 640], spec_c["upload_full_steps"]   # 10/20/40 は重みのみ
+assert checkpoint_content_for(spec_c, 10) == "model_only" and checkpoint_content_for(spec_c, 80) == "full"
+assert checkpoint_content_for(dict(upload_steps=[10]), 10) == "full"   # 旧版の spec
+assert spec["upload_full_steps"] == [3, 6]   # 試走は "all"
+require_training_env(1)
+FSDP2_GRAD_CHECK = dict(status="mismatch")
+try:
+    require_training_env(1); raise SystemExit("grad check gate did not fire")
+except AssertionError:
+    pass
+FSDP2_GRAD_CHECK = dict(status="ok")
 assert len(spec_c["expected_save_steps"]) == 64
 assert spec["steps_per_epoch"] == 2 and spec["total_steps"] == 6 and spec["expected_save_steps"] == [3, 6], spec["expected_save_steps"]
 assert spec["overrides"]["data.response_key"] == "teacher_answer" and spec["overrides"]["trainer.checkpoint.save_contents"] == '["model","optimizer","extra"]'
@@ -140,6 +155,23 @@ open(d + "/model_world_size_1_rank_0.pt", "wb").write(b"PK\x03\x04partial")  # t
 ok, _ = checkpoint_is_complete(d, 1, require_stable=False)
 assert not ok
 print("incomplete checkpoint rejected OK")
+
+# --- model_only (重みのみ) checkpoint: optimizer 状態を除いて manifest を作り、完全性は content 別に判定する
+d_mo = f"{CKPT_DIR}/trial-launchtest/global_step_3_model_only_copy/global_step_3"
+shutil.copytree(f"{CKPT_DIR}/trial-launchtest/global_step_3", d_mo)
+open(os.path.join(os.path.dirname(d_mo), "latest_checkpointed_iteration.txt"), "w").write("3")
+man_mo = build_manifest(spec, 3, d_mo, content="model_only")
+assert man_mo["content"] == "model_only" and not any(f["path"].startswith("optim_") for f in man_mo["files"])
+for f in glob.glob(os.path.join(d_mo, "optim_world_size_*")):
+    os.remove(f)
+assert checkpoint_is_complete(d_mo, 1, require_stable=False, content="model_only")[0]
+assert not checkpoint_is_complete(d_mo, 1, require_stable=False, content="full")[0]
+pr_mo, _ = check_resume_compatibility(man_mo, 1)
+assert any("重みのみ" in p for p in pr_mo), pr_mo
+man_gp = json.loads(json.dumps(man)); man_gp["run_config"]["gpu_profile"] = "blackwell"
+pr_gp, _ = check_resume_compatibility(man_gp, 1)
+assert any("GPU プロファイル" in p for p in pr_gp), pr_gp
+print("model_only checkpoint / GPU profile checks OK")
 
 # --- upload policy: non-selected steps are deleted locally and never uploaded
 spec_p = build_run_spec("trial", 5e-5, 3, data_path=AO_PARQUET, data_sha256=AO_SHA256, n_rows=512, max_length=1536, save_freq=3, run_id="trial-policy")

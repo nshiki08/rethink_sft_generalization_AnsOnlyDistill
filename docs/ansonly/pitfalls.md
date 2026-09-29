@@ -1,6 +1,20 @@
 # ハマりポイント
 
-実際に詰まった点と、誤解しやすい点。環境（Python / GPU / 依存関係）は [environment.md](environment.md) にまとめる。
+実際に詰まった点と、誤解しやすい点。環境の構成と根拠は [environment.md](environment.md)。
+
+## 環境
+
+| 誤解・症状 | 事実 | 対処 |
+| --- | --- | --- |
+| Colab のカーネルに公式の pin を pip で入れる | Colab は Python 3.13（2026-08 から）。numpy 1.26.4 / ray 2.43.0 は cp312 まで | セル 1 が uv で Python 3.12 の公式環境を作り、2 つ目のカーネルで実行する |
+| 学習の subprocess だけ公式環境で動かせば足りる | セル内でも公式コード（dataset クラス、math-verify、tokenizer）を使う。`import verl` は ray を必要とする | 設定セル以降を公式環境カーネルで実行（`%%ao`） |
+| G4 でも公式 torch 2.6.0 が動く | import はできるが sm_120 のコードが無く、CUDA カーネルの実行で失敗する（"no kernel image is available"） | A100 を使う。G4 は `ALLOW_BLACKWELL_TORCH_DEVIATION=True`（torch 2.7.1+cu128）で差分として記録 |
+| flash-attn の wheel を「torch の版」だけで選ぶ | 2.7.4.post1 の torch2.6 用 wheel は sm_80/90 のみ、torch2.7 用 wheel は sm_120 まで含む。ABI も違う（FALSE / TRUE） | プロファイルごとに wheel URL を固定 |
+| 1 GPU の FSDP2 は reduce が恒等なので安全 | world size 1 の NCCL AVG で勾配が 0 になる未解決報告がある | セクション 2 で FSDP 無しとの勾配比較。OK でないと学習しない |
+| Colab の uv 設定がそのまま使われる | Colab は `UV_*` で制約ファイルを指定していることがあり、Colab 既定の版に固定される | 公式環境の作成では `UV_*` を外し `--no-config` |
+| Unix socket のパスに作業ディレクトリを使う | パス長の上限（108 byte）を超えると ZMQ が失敗する | カーネル通信は `/tmp/aok<pid>` |
+| pandas は公式 pin に従う | `requirements.txt` に pandas が無い。放置すると導入時期で 3.x になる | `pandas==2.3.3` に固定（notebook の判断として記録） |
+| セル 1 の再実行で GPU メモリが残る | 前回の公式環境カーネル（とその子プロセス）が残る | pid ファイルから前回のカーネルの process group を終了する |
 
 ## 学習条件
 
@@ -14,6 +28,8 @@
 | `train/loss` が公式の 1/8 | adv-only で loss を N/8 倍しているため | `train/loss_official_scale`（8/N 倍した値）を見る |
 | `train/grad_norm` が公式曲線と合わない | 公式 8 GPU のログは各 GPU の shard ノルムの平均。1 GPU は全体ノルム | 比較に使わない |
 | 別 GPU 台数の checkpoint から再開 | ファイル名・shard が world_size ごと | 同じ N で再開する（`check_resume_compatibility` が止める） |
+| 重みだけの checkpoint から再開 | optimizer 状態が無い（trainer は `load_contents` に optimizer を含めて読む） | 再開候補は optimizer 状態込みの step だけ。重みだけの step は変換・分析用 |
+| メモリ不足が 1 step 目で出ない | AdamW の状態は最初の `optimizer.step()` で作られる | 試走は 2 step 以上（既定 8 step） |
 
 ## データ
 

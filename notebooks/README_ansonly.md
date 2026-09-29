@@ -7,14 +7,17 @@
 
 1. GitHub の Fork `nshiki08/rethink_sft_generalization_AnsOnlyDistill` で `notebooks/ansonly_distillation.ipynb` を開き、「Open in Colab」または
    `https://colab.research.google.com/github/nshiki08/rethink_sft_generalization_AnsOnlyDistill/blob/<branch>/notebooks/ansonly_distillation.ipynb` を開く。
-2. ランタイム → GPU（A100 / L4 など Ampere 以上。T4 は flash-attn 2 が動かないので不可）。
+2. ランタイム → GPU。**A100 を推奨**（公式 `requirements.txt` の torch 2.6.0 がそのまま動く）。
+   - G4（RTX PRO 6000 Blackwell, sm_120）は torch 2.6.0 が動かない。セル 1 で `ALLOW_BLACKWELL_TORCH_DEVIATION=True` にすると torch 2.7.1+cu128 を使い、公式との差として記録する
+   - T4 は flash-attn 2 が動かないので不可
+   - GPU メモリの推定: 1.7B 約 22 GiB、4B 約 41 GiB、8B 約 79 GiB（A100 80GB では不足、G4 96GB なら収まる見込み）
 3. Colab の「シークレット」に以下を登録し、ノートブックからのアクセスを許可する。
    - `HF_TOKEN`（write 権限。checkpoint と最終モデルの保存に使う）
    - `WANDB_API_KEY`（任意。無ければ公式と同じ offline mode）
 
 ## 2. 設定
 
-すべて **設定セル** で行う。主な項目:
+実験の設定は **設定セル**、コードの revision と環境の pin は **セル 1**（通常は変更しない）で行う。設定セルの主な項目:
 
 | 項目 | 変数 | 既定 |
 | --- | --- | --- |
@@ -24,7 +27,9 @@
 | 探索候補 | `SEARCH_GRID_PROPOSED`（提案）/ `SEARCH_GRID_CONFIRMED`（確定）/ `SEARCH_RUN_LIST`（実行する組） | 提案のみ |
 | 最大系列長 | `MAX_LENGTH_MODE` | `"auto_fit"`（全行が収まる長さ。`"official"` で 20000 に戻せる） |
 | 保存周期 | `SAVE_FREQ` | 10（公式 CoT と同じ。保存は学習結果に影響しない） |
-| HF へ転送する step | `HF_UPLOAD_STEPS` | `"cot_public+resume"`（公開 CoT 学生と同じ step 10, 20, 40, 80, 160, 320, 480, 640 と `RESUME_CKPT_EVERY`=40 の倍数。それ以外はローカルで削除）/ `"all"` |
+| HF へ転送する step | `HF_UPLOAD_STEPS` | `"cot_public+resume"`（公開 CoT 学生と同じ step 10, 20, 40, 80, 160, 320, 480, 640 と `RESUME_CKPT_EVERY` の倍数。それ以外はローカルで削除）/ `"all"` |
+| 再開用の間隔 | `RESUME_CKPT_EVERY` | 80（optimizer 状態込みで送る間隔。切断時は最大この step 数を再実行） |
+| 分析用 step の中身 | `HF_ANALYSIS_STEP_CONTENT` | `"model_only"`（再開用以外の step は重みだけ送る。変換・分析はできるが再開はできない）/ `"full"` |
 | 公式 8 GPU の再現 | `EMULATE_OFFICIAL_WORLD_SIZE` | `True`（下記） |
 | HF 保存先 | `HF_CKPT_REPO_ID` / `HF_FINAL_MODEL_REPO_ID` | `None` → HF の whoami から決める |
 | 試走 | `TRIAL_NUM_ROWS`, `TRIAL_EPOCHS`, `TRIAL_SAVE_FREQ`, `TRIAL_KILL_AFTER_STEP` | 512 行 / 4 epoch / 3 / 3 |
@@ -65,7 +70,10 @@ bf16 で残る差は、fp32 では一致する 2 つの計算どうしでも同�
 
 ## 3. 実行順（初回）
 
-セル 0（認証）→ 設定 → 1 → 2 → 3 → 4-a → 4-b → 5（ドライラン）。ここまでは学習も HF への書き込みもしない（GPU の無いランタイムでは 1 GPU として確認する）。
+セル 0（認証）→ 1（環境構築）→ 設定 → 2 → 3 → 4-a → 4-b → 5（ドライラン）。ここまでは学習も HF への書き込みもしない（GPU の無いランタイムでは 1 GPU として確認する）。
+
+- セル 0 と 1 は Colab のカーネル（Python 3.13）で動く。セル 1 が Python 3.12 の公式環境を作り（初回数分）、その環境で 2 つ目のカーネルを起動する。設定セル以降は先頭の `%%ao` でそのカーネルに送られる
+- セル 2 は GPU があるとき、公式の `apply_fsdp2` で包んだ小型モデルの勾配と FSDP 無しの勾配を比べる（1 GPU の NCCL `ReduceOp.AVG` で勾配が壊れるという torch の未解決報告への対策）。一致しなければ学習セルは止まる
 
 - 3 で `AO_DATA_READY`、4-b で `MASK_CHECK_OK` が `True` にならなければ、本学習のセルは開始しない。
 - `EMULATE_OFFICIAL_WORLD_SIZE=True` では、4-b の `VIEW_CHECK_OK`（公式 8 GPU の micro batch 構成の再現確認）も必要。4-b は学習に使うのと同じ GPU 台数で確認するので、学習する GPU ランタイムで 4-b をもう一度実行する（台数が違うと本学習のセルが止まる）。`False` にした場合は警告を出して学習し、公式との差として記録する。
@@ -83,9 +91,9 @@ bf16 で残る差は、fp32 では一致する 2 つの計算どうしでも同�
 
 ## 4. 切断後の再開
 
-1. 新しいランタイムでセル 0 → 設定 → 1 → 2 → 3 → 4-a → 4-b → 6-a を実行する（同じ Fork commit・同じデータ・同じ Base revision が復元される）。
+1. 新しいランタイム（保存時と同じ種類の GPU）でセル 0 → 1 → 設定 → 2 → 3 → 4-a → 4-b → 6-a を実行する（同じ Fork commit・同じデータ・同じ Base revision が復元される）。
 2. 設定セルで `RUN_MODE="train"`、`RESUME_RUN_ID="<run_id>"`（`RESUME_STEP` は `"latest"` か整数）を設定する。
-3. 「再開」セルを実行する。HF の完了済み checkpoint 一覧を表示し、選択した step を取得して manifest（サイズ・sha256）で検証し、
+3. 「再開」セルを実行する。HF の checkpoint 一覧を表示し、optimizer 状態込みで転送・検証済みの step（重みだけの step は候補にしない）を取得して manifest（サイズ・sha256）で検証し、
    GPU 台数（FSDP world_size）・データ sha256・Base revision の互換性を確認してから
    `trainer.resume_mode=resume_path trainer.resume_from_path=...` で再開する。総 epoch 数・総 step 数は保存時の値を維持する。
    最後の保存以降の step は再実行になる。
@@ -93,7 +101,8 @@ bf16 で残る差は、fp32 では一致する 2 つの計算どうしでも同�
 ## 5. 成果物
 
 - ローカル: `/content/ao_work/{data,models,ckpt,log,records,merged}`（Colab のディスク。切断で消える）
-- HF checkpoint repo: `runs/<run_id>/global_step_<N>/`（model/optimizer/extra の shard, `data.pt`, `huggingface/`, `ao_ckpt_manifest.json`, `ao_upload_verified.json`）と `runs/<run_id>/experiment_record_*.json`
+- HF checkpoint repo: `runs/<run_id>/global_step_<N>/`（model/optimizer/extra の shard, `data.pt`, `huggingface/`, `ao_ckpt_manifest.json`, `ao_upload_verified.json`。重みだけの step は optimizer の shard なし）と `runs/<run_id>/experiment_record_*.json`
+- HF の使用量（実測サイズから計算）: 1.7B は再開用 1 個 10.34 GB・重みのみ 3.46 GB で baseline 1 run 約 93 GB、4B は 24.15 GB・8.06 GB で約 217 GB。HF PRO の非公開枠は 1 TB（超過分は 1 TB あたり月 $18）
 - HF 最終モデル repo: `step<N>/`（`verl.model_merger` で変換した HF 形式）と `README.md`（Model Card）
 
 ## 6. 未検証の項目
@@ -102,6 +111,7 @@ bf16 で残る差は、fp32 では一致する 2 つの計算どうしでも同�
 公式 trainer の import、ドライラン、および公式 trainer の代わりに保存形式だけを模した偽プロセスを使った 起動・監視・一時停止/終了・再開・manifest・記録 の処理）。
 以下は Colab で各セルを実行し、ログを確認するまで「動作確認済み」ではない。
 
-- 依存関係のインストールと flash-attn wheel の適用（Colab の Python / torch / CUDA の組み合わせに依存）
+- Colab 上での公式環境の作成（uv の Python 3.12、公式 pin、flash-attn wheel）と公式環境カーネルの起動。同じ手順は CPU で検証済み（`tests/test_env_bootstrap.py`）
+- G4 での torch 2.7.1+cu128 と flash-attn の動作、1 GPU の FSDP2 勾配確認の GPU 上での結果
 - 試走（学習・保存・HF 転送・終了・再開）、本学習、GPU メモリ、所要時間
 - `verl.model_merger` による変換と最終モデルの読み込み・生成

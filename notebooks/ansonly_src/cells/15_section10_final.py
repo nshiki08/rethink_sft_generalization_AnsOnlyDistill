@@ -84,7 +84,7 @@ Answer-only (AO) 蒸留の学生モデル。公開 CoT 学生 `{_saved_spec['cot
 | --- | --- | --- | --- |
 {_changes_md}
 
-- 環境: {json.dumps(ENV_RECORD.get('gpus'))}, torch {PKG_VERSIONS.get('torch')}, transformers {PKG_VERSIONS.get('transformers')}, flash-attn {FLASH_ATTN_VERSION}, Colab={IN_COLAB}
+- 環境: {json.dumps(ENV_RECORD.get('gpus'))}, torch {PKG_VERSIONS.get('torch')}, transformers {PKG_VERSIONS.get('transformers')}, flash-attn {FLASH_ATTN_VERSION}, Colab={IN_COLAB}, GPU プロファイル {_saved_spec.get('gpu_profile', 'official')}{('（公式からの変更: ' + _saved_spec['gpu_profile_deviation'] + '）') if _saved_spec.get('gpu_profile_deviation') else ''}
 - 再開用 checkpoint（model/optimizer/extra/dataloader 状態）: `{HF_CKPT_REPO_ID}` の `runs/{_final_rid}/global_step_*`
 
 ## 評価

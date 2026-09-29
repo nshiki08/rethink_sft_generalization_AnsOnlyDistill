@@ -94,16 +94,25 @@ for _i in [i for i in (0, int(TOTAL_LENS.argmax())) if _targets_all[i] is not No
 
 # ---- 4.3 実効設定 ----
 _param_bytes = sum(os.path.getsize(f) for f in glob.glob(f"{BASE_MODEL_LOCAL}/*.safetensors"))
-CKPT_SIZE_EST_GB = _param_bytes * 3 / 1e9   # bf16 params + AdamW の 2 状態（公式は model_dtype=bf16 で読み込む）
+CKPT_SIZE_EST_GB = _param_bytes * 3 / 1e9   # bf16 params + AdamW の 2 状態（公式は model_dtype=bf16 で読み込む）。1.7B の実測 10.34 GB と 0.2% 以内
+CKPT_MODEL_ONLY_EST_GB = _param_bytes / 1e9 + 0.02   # 重み + extra/data.pt/huggingface/（optimizer 状態なし）
+
+
+def hf_usage_gb(n_full, n_model_only):
+    return n_full * CKPT_SIZE_EST_GB + n_model_only * CKPT_MODEL_ONLY_EST_GB
+
+
 print("\n=== 実効設定（1 GPU あたり micro batch、勾配蓄積） ===")
 for _lr, _ep, _kind in [(OFFICIAL_BASELINE["lr"], OFFICIAL_BASELINE["epochs"], "baseline")] + [(a, b, "search") for a, b in SEARCH_RUN_LIST]:
     _spe = steps_per_epoch(DATASET_EXPECTED_ROWS, OFFICIAL_TBS, max(N_GPUS, 1))
     _micro = MICRO_BATCH_OVERRIDE or OFFICIAL_MICRO_BSZ
     _total = int(math.ceil(_spe * _ep))
     _saves = sorted(set(list(range(SAVE_FREQ, _total + 1, SAVE_FREQ)) + [_total]))
-    _nsave = len(_saves) if HF_UPLOAD_STEPS == "all" else len([x for x in _saves if x in COT_PUBLIC_STEPS or x % RESUME_CKPT_EVERY == 0 or x == _total])
+    _up = _saves if HF_UPLOAD_STEPS == "all" else [x for x in _saves if x in COT_PUBLIC_STEPS or x % RESUME_CKPT_EVERY == 0 or x == _total]
+    _nfull = len(_up) if (HF_UPLOAD_STEPS == "all" or HF_ANALYSIS_STEP_CONTENT == "full") else len([x for x in _up if x % RESUME_CKPT_EVERY == 0 or x == _total])
     print(f"  {_kind:8s} lr={fmt_lr(_lr)} ep={_ep}: steps/epoch={_spe} total={_total} warmup={int(_total * float(YAML_DEFAULTS.optim.warmup_steps_ratio))} "
-          f"micro/gpu={_micro} accum={(OFFICIAL_TBS // max(N_GPUS, 1)) // _micro} HF uploads={_nsave} (~{_nsave * CKPT_SIZE_EST_GB:.0f} GB on HF at {CKPT_SIZE_EST_GB:.1f} GB/ckpt)")
+          f"micro/gpu={_micro} accum={(OFFICIAL_TBS // max(N_GPUS, 1)) // _micro} HF uploads={len(_up)}（再開用 {_nfull} x {CKPT_SIZE_EST_GB:.1f} GB + "
+          f"重みのみ {len(_up) - _nfull} x {CKPT_MODEL_ONLY_EST_GB:.1f} GB ≈ {hf_usage_gb(_nfull, len(_up) - _nfull):.0f} GB on HF）")
 print("  loss: micro batch ごとの token 平均で backward し、1 GPU 内では micro batch の勾配を「和」で蓄積、GPU 間は FSDP2 が「平均」する（公式 training_step）。"
       "ログの train/loss は micro batch の loss の平均")
 print("  optimizer: AdamW betas=%s wd=%s, scheduler=%s warmup_ratio=%s, clip_grad=%s, bf16, FSDP(%s), grad ckpt=%s, shuffle=%s, truncation=%s"

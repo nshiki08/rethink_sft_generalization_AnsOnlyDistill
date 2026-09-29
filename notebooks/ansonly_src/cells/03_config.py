@@ -1,4 +1,4 @@
-# @title 設定セル（編集はここだけ）
+# @title 設定セル（実験の設定はここだけ。コードの revision と環境の pin はセル 1）
 import os, sys, json, re, time, datetime, pathlib
 
 # =============================================================================
@@ -14,6 +14,8 @@ RUN_ID_SUFFIX = ""            # 同名 run と衝突する場合に付ける識�
 # =============================================================================
 # 対象モデル（まず Qwen3 系列。サイズはここで選ぶ）
 #   1.7B: 小規模な動作確認候補 / 4B: 本実験候補（Colab で実行可能かは試走で実測する）
+#   GPU メモリの推定（公式 trainer のコードから算出。bf16 の重み・勾配・AdamW 2 状態 = 8 x パラメータ数 + logits 約 5.2 GiB など）:
+#   1.7B 約 22 GiB / 4B 約 41 GiB / 8B 約 79 GiB。メモリ不足は optimizer 状態が作られる 2 step 目から出る
 # =============================================================================
 MODEL_KEY = "Qwen3-1.7B"
 
@@ -22,15 +24,15 @@ SUPPORTED_MODELS = {
     "Qwen3-1.7B": dict(status="supported",
                        base_repo="Qwen/Qwen3-1.7B-Base", base_revision="ea980cb0a6c2ae4b936e82123acc929f1cec04c1",
                        cot_repo="jasonrqh/Qwen3-1.7B_Math-CoT-20k_lr5e-5_ep8_bs256", cot_revision="e4fcd58c7b104d3444e0e1d1b470f5107fcc2618",
-                       cot_subfolder="step640", official_script="Qwen3-1.7B_Math-CoT-20k_lr5e-5_ep8_bs256.sh", note="小規模な動作確認候補"),
+                       cot_subfolder="step640", official_script="Qwen3-1.7B_Math-CoT-20k_lr5e-5_ep8_bs256.sh", note="推定ピーク約 22 GiB（micro 4, max_length 1536）。A100 80GB / G4 96GB に収まる見込み"),
     "Qwen3-4B": dict(status="supported",
                      base_repo="Qwen/Qwen3-4B-Base", base_revision="906bfd4b4dc7f14ee4320094d8b41684abff8539",
                      cot_repo="jasonrqh/Qwen3-4B_Math-CoT-20k_lr5e-5_ep8_bs256", cot_revision="aaf1c51a6a2ee319750cafbd7cb8be0df10018b8",
-                     cot_subfolder="step640", official_script="Qwen3-4B_Math-CoT-20k_lr5e-5_ep8_bs256.sh", note="本実験候補（Colab で収まるかは要実測）"),
+                     cot_subfolder="step640", official_script="Qwen3-4B_Math-CoT-20k_lr5e-5_ep8_bs256.sh", note="本実験候補。推定ピーク約 41 GiB。A100 80GB / G4 96GB に収まる見込み（試走で実測する）"),
     "Qwen3-8B": dict(status="supported",
                      base_repo="Qwen/Qwen3-8B-Base", base_revision="49e3418fbbbca6ecbdf9608b4d22e5a407081db4",
                      cot_repo="jasonrqh/Qwen3-8B_Math-CoT-20k_lr5e-5_ep8_bs256", cot_revision="522decd73c0b46f7029c2a315b3cc177c23a3498",
-                     cot_subfolder="step640", official_script="Qwen3-8B_Math-CoT-20k_lr5e-5_ep8_bs256.sh", note="Colab 単一 GPU では full SFT が収まらない可能性が高い"),
+                     cot_subfolder="step640", official_script="Qwen3-8B_Math-CoT-20k_lr5e-5_ep8_bs256.sh", note="推定ピーク約 79 GiB。A100 80GB ではほぼ確実にメモリ不足、G4 96GB なら収まる見込み（torch の版の変更を伴う）"),
     "Qwen3-14B": dict(status="supported",
                       base_repo="Qwen/Qwen3-14B-Base", base_revision="0b0bd3732e2c374d483664439ea334928b65f304",
                       cot_repo="jasonrqh/Qwen3-14B_Math-CoT-20k_lr5e-5_ep8_bs256", cot_revision="e8e6542249d647ac82c556a93410a9c0cafd41cb",
@@ -50,13 +52,8 @@ SUPPORTED_MODELS = {
 TEACHER = dict(repo="Qwen/Qwen3-32B", revision="9216db5781bf21249d130ec9da846c4624c16137")  # 記録用。ダウンロードしない
 
 # =============================================================================
-# コードとデータの revision
+# データの revision（コードの revision と環境の pin はセル 1 で設定する）
 # =============================================================================
-FORK_REPO_URL = "https://github.com/nshiki08/rethink_sft_generalization_AnsOnlyDistill"
-FORK_REF = "main"                 # ブランチ名または commit。実行時に HEAD の commit を記録する
-UPSTREAM_REPO_URL = "https://github.com/Nebularaid2000/rethink_sft_generalization"   # 参照専用（push 無効化）
-UPSTREAM_REFERENCE_COMMIT = "71a442ea8f0adc4a1df4529d3c43393ac6e504fd"               # 再現用の参照 commit
-
 DATASET_REPO = "jasonrqh/Math-CoT-20k"
 DATASET_REVISION = "1435fb21d4fecc8ad4966a26f22a874cf2b527f1"
 DATASET_FILE = "Math-CoT-20k.parquet"
@@ -117,15 +114,20 @@ MICRO_BATCH_OVERRIDE = None       # 公式の micro batch 4 を変えると (1) 
                                   # メモリ不足のときは、条件を保ったまま GPU を大きくするか 2/4 台にする。micro batch を変える場合は
                                   # EMULATE_OFFICIAL_WORLD_SIZE=False にし、公式との差として記録される（黙って変えない）
 CPU_OFFLOAD_OVERRIDE = None       # 使用不可: 公式 trainer は fsdp2 経路でも FSDP1 用の CPUOffload を渡すため FSDP2 に無視され offload されない（trainer:300-303, 337）
+REQUIRE_FSDP2_GRAD_CHECK = True  # セクション 2 の「1 GPU の FSDP2 勾配確認」が OK でなければ学習を開始しない（world size 1 の NCCL AVG の既知の不具合報告への対策）
 KEEP_OFFICIAL_ENV_VARS = True     # 公式スクリプトの export（CUDA_LAUNCH_BLOCKING=1 など）をそのまま使う。False なら CUDA_LAUNCH_BLOCKING を外し記録する
 
 SAVE_FREQ = 10                    # trainer.save_freq（正の整数。0 は使わない）。公式 CoT と同じ 10。保存は学習結果に影響しない
 # HF へ転送する step: "cot_public+resume" = 公開 CoT 学生と同じ step（10,20,40,80,160,320,480,640）と RESUME_CKPT_EVERY の倍数と最終 step。
 #   それ以外の step の checkpoint は保存完了後にローカルから消す（HF に無いので再開候補にもならない）。"all" = 保存した全 step を転送
-# checkpoint 1 個 ≈ bf16 params x3（AdamW 2 状態込み）: 1.7B ≈ 10 GB, 4B ≈ 24 GB。HF の容量上限に注意（ドライランで見積を表示）
+# checkpoint 1 個（実測）: 1.7B = 10.34 GB（うち optimizer 状態 6.88 GB）, 4B = 24.15 GB（同 16.09 GB）。HF PRO の非公開枠は 1 TB
+#   HF_ANALYSIS_STEP_CONTENT="model_only": 再開用（RESUME_CKPT_EVERY の倍数と最終 step）以外の step は optimizer 状態を送らない
+#   （重み・extra・data.pt・huggingface/ は送る。分析・変換はできるが、その step からは再開できない）
+#   1.7B baseline 640 step の HF 使用量: RESUME_CKPT_EVERY=80 + model_only で約 93 GB（=40 + full で約 186 GB）
 HF_UPLOAD_STEPS = "cot_public+resume"
 COT_PUBLIC_STEPS = [10, 20, 40, 80, 160, 320, 480, 640]   # 公開 CoT 学生の HF repo にある stepNNN（2026-09-24 に確認）
-RESUME_CKPT_EVERY = 40            # 再開用に HF へ転送する間隔（step）。SAVE_FREQ の倍数にする
+RESUME_CKPT_EVERY = 80            # 再開用（optimizer 状態込み）に HF へ転送する間隔（step）。SAVE_FREQ の倍数。切断時は最大この step 数を再実行する
+HF_ANALYSIS_STEP_CONTENT = "model_only"   # "model_only" | "full"（公開 CoT と同じ step も optimizer 状態込みで送る）
 SEED = None                       # None = 公式既定 (trainer.seed=1 は yaml 既定。trainer 内で明示的な乱数初期化はされていない)
 
 # =============================================================================
@@ -183,11 +185,11 @@ FINAL_RUN_ID = None               # None → このセッションで学習し�
 FINAL_STEP = "last"               # "last" または整数 step
 
 # =============================================================================
-# 作業ディレクトリと環境の pin
+# 作業ディレクトリ（セル 1 で決めた値を使う。ここでは変更しない）
 # =============================================================================
-IN_COLAB = "google.colab" in sys.modules or os.path.exists("/content")
-WORK_DIR = "/content/ao_work" if IN_COLAB else os.path.abspath("./ao_work")
-REPO_DIR = f"{WORK_DIR}/repo"
+IN_COLAB = ENV_BOOTSTRAP["in_colab"]
+WORK_DIR = ENV_BOOTSTRAP["work_dir"]
+REPO_DIR = ENV_BOOTSTRAP["repo_dir"]
 DATA_DIR = f"{WORK_DIR}/data"
 MODELS_DIR = f"{WORK_DIR}/models"
 CKPT_DIR = f"{WORK_DIR}/ckpt"
@@ -196,26 +198,12 @@ RECORD_DIR = f"{WORK_DIR}/records"
 for _d in (WORK_DIR, DATA_DIR, MODELS_DIR, CKPT_DIR, LOG_DIR, RECORD_DIR):
     os.makedirs(_d, exist_ok=True)
 
-# 公式 requirements.txt の pin から、学習に必要な範囲を抜き出したもの（vllm/sglang/評価系は含めない）
-PIP_PINNED = [
-    "torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0",
-    "transformers==4.52.4", "tokenizers==0.21.4", "accelerate==1.10.1", "datasets==4.0.0",
-    "tensordict==0.9.1", "torchdata==0.11.0", "peft==0.17.1",
-    "hydra-core==1.3.2", "omegaconf==2.3.0", "wandb==0.21.1", "ray[default]==2.43.0",
-    "codetiming==1.4.0", "dill==0.3.8", "pyarrow==21.0.0", "numpy==1.26.4",
-    "math-verify==0.7.0", "latex2sympy2_extended==1.10.1", "pylatexenc==2.10",
-    "huggingface_hub==0.34.4", "hf-xet==1.1.9", "safetensors==0.6.2", "einops==0.8.1", "sentencepiece==0.2.1",
-    "regex==2025.7.34", "word2number==1.1",   # evaluation/math_eval/utils/parser.py（既存の評価 parser）が使う
-    "Jinja2==3.1.6",                          # chat template の描画に使われ、プロンプトの token に影響し得るので公式 requirements.txt と揃える
-]
-FLASH_ATTN_VERSION = "2.7.4.post1"   # 公式 pin。GitHub Releases の prebuilt wheel を torch/CUDA/Python/ABI に合わせて選ぶ
-EXTRA_PIP_PACKAGES = []               # import 確認で不足が出た場合に追加
-
 # ---- 設定の妥当性 ----
 assert RUN_MODE in ("dry_run", "trial", "train"), RUN_MODE
 assert RUN_KIND in ("baseline", "search"), RUN_KIND
 assert isinstance(SAVE_FREQ, int) and SAVE_FREQ > 0, "trainer.save_freq は正の整数。0 は使わない"
 assert HF_UPLOAD_STEPS in ("all", "cot_public+resume"), HF_UPLOAD_STEPS
+assert HF_ANALYSIS_STEP_CONTENT in ("model_only", "full"), HF_ANALYSIS_STEP_CONTENT
 assert RESUME_CKPT_EVERY % SAVE_FREQ == 0 and all(s % SAVE_FREQ == 0 for s in COT_PUBLIC_STEPS) or HF_UPLOAD_STEPS == "all", \
     "RESUME_CKPT_EVERY と COT_PUBLIC_STEPS は SAVE_FREQ の倍数にする（保存されない step は転送できない）"
 assert isinstance(TRIAL_SAVE_FREQ, int) and TRIAL_SAVE_FREQ > 0

@@ -1,5 +1,5 @@
 # @title 再開: Colab 切断後に HF の完了済み checkpoint から再開する（RESUME_RUN_ID を設定。セル 0〜4 と 6-a を先に実行）
-# 手順: 1) 環境と Fork の commit を復元（セル 2） 2) HF の checkpoint 一覧 3) 最新の完了済み or 指定 step を選択
+# 手順: 1) 環境と Fork の commit を復元（セル 1・2） 2) HF の checkpoint 一覧 3) 最新の完了済み or 指定 step を選択
 #       4) HF revision を記録して取得・manifest で検証 5) trainer.resume_mode=resume_path / resume_from_path で再開
 TRAIN_RESULTS = globals().get("TRAIN_RESULTS", {})
 if not RESUME_RUN_ID:

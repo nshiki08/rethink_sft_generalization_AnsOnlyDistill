@@ -22,7 +22,10 @@ for _lr, _ep in plan_runs():
             "-m", _spec["module"]] + [f"{k}={v}" for k, v in _spec["overrides"].items()]
     print("  command:\n    " + " \\\n    ".join(_cmd))
     print("  env:", _spec["env"])
-    print(f"  checkpoint: 保存 {len(_spec['expected_save_steps'])} 回、HF 転送 {len(_spec['upload_steps'])} 回 x {CKPT_SIZE_EST_GB:.1f} GB = {len(_spec['upload_steps']) * CKPT_SIZE_EST_GB:.0f} GB（HF）、"
+    _nfull = len(_spec["upload_full_steps"])
+    _nlight = len(_spec["upload_steps"]) - _nfull
+    print(f"  checkpoint: 保存 {len(_spec['expected_save_steps'])} 回、HF 転送 {len(_spec['upload_steps'])} 回（再開用 {_nfull} x {CKPT_SIZE_EST_GB:.1f} GB + "
+          f"重みのみ {_nlight} x {CKPT_MODEL_ONLY_EST_GB:.1f} GB ≈ {hf_usage_gb(_nfull, _nlight):.0f} GB。HF PRO の非公開枠は 1 TB）、"
           f"ローカルは転送・検証済み {LOCAL_KEEP_LAST_N_VERIFIED_CKPTS} 個を保持")
     _local_exists = os.path.exists(_spec["overrides"]["trainer.default_local_dir"])
     _remote = hf_run_paths(HF_CKPT_REPO_ID, _spec["run_id"]) if HF_API else {}

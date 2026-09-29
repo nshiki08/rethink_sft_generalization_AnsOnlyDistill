@@ -5,7 +5,7 @@ TRAIN_RESULTS = globals().get("TRAIN_RESULTS", {})
 def preflight_train(spec):
     """本学習の直前確認: データ条件・ゲート・試走設定の混入・衝突"""
     assert RUN_MODE == "train", "RUN_MODE='train' でのみ本学習を開始する"
-    assert N_GPUS >= 1 and FLASH_ATTN_OK, "GPU と flash-attn が必要"
+    require_training_env(spec["n_gpus"])
     assert AO_DATA_READY, "AO データに未解決の抽出/照合問題がある（セクション 3）"
     assert MASK_CHECK_OK, "loss mask の確認に失敗している（セクション 4）"
     assert spec["data_path"] == AO_PARQUET and spec["n_rows"] == DATASET_EXPECTED_ROWS and spec["data_sha256"] == AO_SHA256, "本学習は全 20,480 行の AO データで行う"

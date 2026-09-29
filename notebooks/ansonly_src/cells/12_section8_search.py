@@ -1,9 +1,9 @@
-# @title 8. LR / epoch / scheduler 探索（提案は論文の最適化条件。各候補を同じ Base から独立に学習。8 epoch run の途中 checkpoint を短い epoch 設定の代用にしない）
+# @title 8. LR / epoch / scheduler 探索（保留中。baseline の性能が出ないときに使う。候補は論文の最適化条件。各候補を同じ Base から独立に学習。8 epoch run の途中 checkpoint を短い epoch 設定の代用にしない）
 TRAIN_RESULTS = globals().get("TRAIN_RESULTS", {})
 SEARCH_SPECS = {}
 if RUN_MODE != "train" or RUN_KIND != "search":
     print("RUN_MODE='train' かつ RUN_KIND='search' のときだけ実行する（現在: %s / %s）" % (RUN_MODE, RUN_KIND))
-    print("提案グリッド:", SEARCH_GRID_PROPOSED, "| 確定グリッド:", SEARCH_GRID_CONFIRMED, "| 実行リスト:", SEARCH_RUN_LIST)
+    print("探索は保留中。候補:", SEARCH_GRID_PROPOSED, "| 確定グリッド:", SEARCH_GRID_CONFIRMED, "| 実行リスト:", SEARCH_RUN_LIST)
 elif not SEARCH_RUN_LIST:
     print("SEARCH_RUN_LIST が空。実行する (lr, epochs, scheduler) を設定セルで指定する")
 else:

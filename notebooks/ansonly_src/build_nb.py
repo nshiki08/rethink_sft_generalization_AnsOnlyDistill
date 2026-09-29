@@ -24,7 +24,7 @@ SECTION_HEADERS = {
     "08_section5_dryrun.py": "## 5. ドライラン（既定の実行モード）",
     "09_helpers_launch_monitor_hf.py": "## 6. 短い学習・HF 保存・再開の試走\n\n6-a は起動・監視・HF 転送・再開の共通処理（セクション 7〜10 と『再開』でも使う）。6-b が試走本体。",
     "11_section7_baseline.py": "## 7. baseline の確認または実行",
-    "12_section8_search.py": "## 8. LR / epoch 探索",
+    "12_section8_search.py": "## 8. LR / epoch 探索（保留中）",
     "13_resume.py": "## 再開: Colab 切断後に HF の checkpoint から続ける\n\n切断後は **セル 0（認証）→ 1（環境構築）→ 設定セル → 2 → 3 → 4-a → 4-b → 6-a** を実行してから、`RESUME_RUN_ID` を設定してこのセルを実行する。",
     "14_section9_eval.py": "## 9. 評価（論文と同じ方法）\n\n公式の `evaluation/math_eval/math_eval_budget.py` を無変更で実行する（MATH500 avg@3, AIME24 avg@10, temperature 0.6, 最大 32768 token）。"
                            "論文と同じく各 step の推移を記録し、条件や checkpoint の選択はしない。",

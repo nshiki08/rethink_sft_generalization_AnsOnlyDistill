@@ -35,4 +35,4 @@ Colab のカーネルは Python 3.13 で公式 pin が入らない。セル 1 �
 | [docs/ansonly/official_8gpu_emulation.md](docs/ansonly/official_8gpu_emulation.md) | 公式 8 GPU を 1 GPU で再現する方法（行の並べ替え + adv-only）、不採用案、残る差、検証結果 |
 | [docs/ansonly/environment.md](docs/ansonly/environment.md) | Colab の Python / GPU / 依存関係の扱い |
 | [docs/ansonly/pitfalls.md](docs/ansonly/pitfalls.md) | ハマりポイント |
-| [docs/ansonly/open_items.md](docs/ansonly/open_items.md) | 未決定事項（探索範囲、HF 容量）と未検証項目 |
+| [docs/ansonly/open_items.md](docs/ansonly/open_items.md) | 探索（保留中）、HF 容量、未検証項目 |

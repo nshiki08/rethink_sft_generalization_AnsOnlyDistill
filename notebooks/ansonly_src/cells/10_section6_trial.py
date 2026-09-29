@@ -108,9 +108,10 @@ else:
     _base_saves = len(set(list(range(SAVE_FREQ, _base_steps + 1, SAVE_FREQ)) + [_base_steps]))
     _base_est = _init_sec + _base_steps * _step_sec + _base_saves * (_save_sec or 0)
     print(f"  baseline 概算: init {_init_sec:.0f}s + {_base_steps} steps x {_step_sec:.1f}s + {_base_saves} saves x {_save_sec or 0}s ≈ {_base_est / 3600:.1f} h（HF 転送は並行。評価・変換・最終アップロードは未計測）")
-    _grid = [normalize_run(c) for c in (SEARCH_GRID_CONFIRMED or SEARCH_GRID_PROPOSED)]
-    _grid_steps = sum(steps_per_epoch(DATASET_EXPECTED_ROWS, OFFICIAL_TBS, N_GPUS) * e for _, e, _ in _grid)
-    print(f"  探索全体（{len(_grid)} 条件 = {_grid_steps} steps）概算 ≈ {(_grid_steps * _step_sec + len(_grid) * _init_sec) / 3600:.1f} h（保存・評価は含まない）")
+    _grid = [normalize_run(c) for c in (SEARCH_GRID_CONFIRMED or [])]
+    if _grid:
+        _grid_steps = sum(steps_per_epoch(DATASET_EXPECTED_ROWS, OFFICIAL_TBS, N_GPUS) * e for _, e, _ in _grid)
+        print(f"  探索全体（{len(_grid)} 条件 = {_grid_steps} steps）概算 ≈ {(_grid_steps * _step_sec + len(_grid) * _init_sec) / 3600:.1f} h（保存・評価は含まない）")
     print("  注意: 試走は step 上限を使わず epoch 数で短くしたので scheduler 期間は試走内で完結している。試走の checkpoint・重み・データ削減は本学習に使わない")
     TRIAL_TIMING = dict(init_sec=_init_sec, step_sec_median=float(_step_sec), save_sec=_save_sec, upload_sec=_upload_sec, gpu_mem_max_mb=_a["monitor"]["gpu_mem_max_mb"],
                         baseline_est_hours=_base_est / 3600, timing_A=_tA, timing_B=_tB, timing_C=_tC, resume_checks=RESUME_CHECKS, lr_check=LR_CHECK)

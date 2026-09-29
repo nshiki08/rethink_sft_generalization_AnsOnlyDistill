@@ -5,10 +5,11 @@
 論文には dev が無く、条件や checkpoint の選択もしていない（[paper_alignment.md](paper_alignment.md)）。
 方針: 論文に無い手順は行わない。探索の各条件を、論文と同じ評価（セクション 9）で step ごとに評価して並べて報告する。1 つを選ぶ処理は無い。
 
-## 2. 探索範囲: 未確定
+## 2. 探索: 保留（決定済み）
 
-提案は論文が Qwen3-14B で行った最適化条件（[paper_alignment.md](paper_alignment.md) の 3 節）: lr 5e-5 / 1 epoch、lr 1e-5 / 1・2 epoch、lr 5e-5 / 16 epoch（cosine・constant）、lr 1e-4 / 16 epoch（constant）。
-教授との合意待ち（`SEARCH_GRID_CONFIRMED=None`）。1.7B/4B ではこれらの条件の公開 CoT 学生が無い。
+まず baseline（論文の既定条件 lr 5e-5 / 8 epoch / cosine）だけを学習する。性能が出ないときに探索する（`SEARCH_GRID_CONFIRMED=None`、`SEARCH_RUN_LIST=[]`）。
+探索するときの候補は論文が Qwen3-14B で行った最適化条件（[paper_alignment.md](paper_alignment.md) の 3 節）: lr 5e-5 / 1 epoch、lr 1e-5 / 1・2 epoch、lr 5e-5 / 16 epoch（cosine・constant）、lr 1e-4 / 16 epoch（constant）。1.7B/4B ではこれらの条件の公開 CoT 学生が無い。
+「性能が出ない」の基準は未定（論文に dev が無いので、何で判断するかを決めてから探索する）。
 
 ## 3. HF の容量
 

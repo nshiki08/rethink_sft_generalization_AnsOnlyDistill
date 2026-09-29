@@ -32,16 +32,16 @@
 
 論文が lr / epoch / scheduler を変えたのは **Qwen3-14B-Base のみ**（1.7B/4B/8B は既定のみ。公開 CoT 学生も既定のみ）。
 
-| 論文の条件 | 出典 | ノートブックの提案 |
+| 論文の条件 | 出典 | ノートブック |
 | --- | --- | --- |
 | lr 5e-5, 8 epoch, cosine | 既定（Sec. 2.1） | baseline |
-| lr 5e-5, 1 epoch | Tab. 4 | 探索候補 |
-| lr 1e-5, 1 epoch / 2 epoch | Tab. 4 | 探索候補 |
-| lr 5e-5, 16 epoch, cosine | Sec. 3.4 Setting 2 | 探索候補 |
-| lr 5e-5, 16 epoch, constant | Sec. 3.4 Setting 3 | 探索候補 |
-| lr 1e-4, 16 epoch, constant | Sec. 3.4 Setting 4 | 探索候補 |
+| lr 5e-5, 1 epoch | Tab. 4 | 探索するときの候補（保留中） |
+| lr 1e-5, 1 epoch / 2 epoch | Tab. 4 | 探索するときの候補（保留中） |
+| lr 5e-5, 16 epoch, cosine | Sec. 3.4 Setting 2 | 探索するときの候補（保留中） |
+| lr 5e-5, 16 epoch, constant | Sec. 3.4 Setting 3 | 探索するときの候補（保留中） |
+| lr 1e-4, 16 epoch, constant | Sec. 3.4 Setting 4 | 探索するときの候補（保留中） |
 
-- 提案は `SEARCH_GRID_PROPOSED`（未確定）。確定は `SEARCH_GRID_CONFIRMED`
+- **探索は保留**。まず baseline だけを学習し、性能が出ないときに探索する。候補は `SEARCH_GRID_PROPOSED`、確定したら `SEARCH_GRID_CONFIRMED`
 - 1.7B/4B ではこれらの条件の公開 CoT 学生が無い。CoT との比較が同じ条件でできるのは baseline だけ
 - 探索の結果は論文と同じく各条件の推移を並べて報告する（選択はしない）
 

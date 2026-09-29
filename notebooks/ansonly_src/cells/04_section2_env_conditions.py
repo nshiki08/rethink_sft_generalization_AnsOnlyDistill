@@ -150,7 +150,7 @@ print(f"  AO Distill Student : このノートブックで学習（Base から F
 
 print("\n=== 公式基準設定（公開 CoT スクリプトを実行時に解析して表示する。ここは目安） ===")
 print(f"  lr={OFFICIAL_BASELINE['lr']}, epochs={OFFICIAL_BASELINE['epochs']}  [{OFFICIAL_BASELINE['status']}]")
-print("  探索候補（提案・未確定）:", SEARCH_GRID_PROPOSED)
+print("  探索: 保留（baseline の性能が出ないときに行う）。候補:", SEARCH_GRID_PROPOSED)
 print("  探索候補（確定）      :", SEARCH_GRID_CONFIRMED)
 print("  このセッションで実行する候補:", SEARCH_RUN_LIST)
 

@@ -24,7 +24,7 @@
 | 実行モード | `RUN_MODE` | `"dry_run"`（学習も HF 書き込みもしない） / `"trial"` / `"train"` |
 | run の種類 | `RUN_KIND` | `"baseline"`（公式 CoT 設定 lr 5e-5 / 8 epoch）/ `"search"` |
 | 対象モデル | `MODEL_KEY` | `"Qwen3-1.7B"`（`SUPPORTED_MODELS` から選ぶ。Qwen2.5 系は理由付きで blocked） |
-| 探索候補 | `SEARCH_GRID_PROPOSED`（提案 = 論文が 14B で行った 6 条件）/ `SEARCH_GRID_CONFIRMED`（確定）/ `SEARCH_RUN_LIST`（実行する `(lr, epochs, scheduler)`） | 提案のみ |
+| 探索候補 | `SEARCH_GRID_PROPOSED`（探索するときの候補 = 論文が 14B で行った 6 条件）/ `SEARCH_GRID_CONFIRMED`（確定）/ `SEARCH_RUN_LIST`（実行する `(lr, epochs, scheduler)`） | 探索は保留（baseline のみ） |
 | 最大系列長 | `MAX_LENGTH_MODE` | `"auto_fit"`（全行が収まる長さ。`"official"` で 20000 に戻せる） |
 | 保存周期 | `SAVE_FREQ` | 10（公式 CoT と同じ。保存は学習結果に影響しない） |
 | HF へ転送する step | `HF_UPLOAD_STEPS` | `"cot_public+resume"`（論文が評価した step 10, 20, 40, 80, 160, 320, 480, 640（16 epoch は 1280 まで）と `RESUME_CKPT_EVERY` の倍数。それ以外はローカルで削除）/ `"all"` |

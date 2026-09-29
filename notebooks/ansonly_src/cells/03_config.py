@@ -94,9 +94,9 @@ PAPER_OPTIMIZATION_CONDITIONS = [
     dict(lr=5e-5, epochs=16, scheduler="constant", paper="Sec. 3.4 Setting 3"),
     dict(lr=1e-4, epochs=16, scheduler="constant", paper="Sec. 3.4 Setting 4"),
 ]
-# 探索対象は optim.lr, trainer.total_epochs, optim.lr_scheduler。提案は論文の条件（default 以外）。提案値と確定値を分ける。
-SEARCH_GRID_PROPOSED = [(c["lr"], c["epochs"], c["scheduler"]) for c in PAPER_OPTIMIZATION_CONDITIONS[1:]]   # 提案（未確定）
-SEARCH_GRID_CONFIRMED = None      # 教授と合意後に [(lr, epochs, scheduler), ...] を入れる
+# 探索は保留: まず baseline だけを学習し、性能が出ないときに探索する。探索対象は optim.lr, trainer.total_epochs, optim.lr_scheduler。
+SEARCH_GRID_PROPOSED = [(c["lr"], c["epochs"], c["scheduler"]) for c in PAPER_OPTIMIZATION_CONDITIONS[1:]]   # 探索するときの候補（論文の条件。保留中）
+SEARCH_GRID_CONFIRMED = None      # 探索すると決めたら [(lr, epochs, scheduler), ...] を入れる
 SEARCH_RUN_LIST = []              # このセッションで実行する候補 [(lr, epochs) or (lr, epochs, scheduler), ...]。scheduler 省略時は "cosine"
 
 # 最大系列長: "auto_fit" = 全行が切り詰められずに収まる最小の長さ（MAX_LENGTH_ROUND_TO の倍数に切り上げ）

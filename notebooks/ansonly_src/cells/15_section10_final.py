@@ -31,6 +31,13 @@ else:
 
     _evals = globals().get("DEV_EVAL_RESULTS", [])
     _paper_evals = [r for r in globals().get("PAPER_EVAL_RESULTS", []) if r.get("run_id") == _final_rid]
+    if not _paper_evals:   # 別のセッションで評価した場合は HF の runs/<run_id>/paper_eval/ から step ごとに最新の結果を読む
+        _latest = {}
+        for _f in sorted(f for f in HF_API.list_repo_files(HF_CKPT_REPO_ID, repo_type="model") if f.startswith(f"runs/{_final_rid}/paper_eval/")):
+            _latest[_f.split("/")[-1].split("_")[0]] = _f   # step<N>_<時刻>.json → 時刻順で最後が最新
+        _paper_evals = [json.load(open(hf_hub_download(HF_CKPT_REPO_ID, _f, repo_type="model", local_dir=f"{WORK_DIR}/hf_markers"))) for _f in _latest.values()]
+        if _paper_evals:
+            print(f"論文と同じ評価の結果を HF から読んだ: {len(_paper_evals)} step")
     _pe_md = "\n".join(f"| {r['step']} | " + " | ".join(f"{r['results'][d][f'avg@{PAPER_EVAL_K[d]}']:.1f} ({'' if r['results'][d].get('paper_reference') is None else r['results'][d]['paper_reference']})"
                                                          for d in PAPER_EVAL_DATASETS) + f" | {r['results'][PAPER_EVAL_DATASETS[0]]['avg_length_tokens']:.0f} |"
                         for r in sorted(_paper_evals, key=lambda r: r["step"])) or "| (未実施) |" + " - |" * (len(PAPER_EVAL_DATASETS) + 1)

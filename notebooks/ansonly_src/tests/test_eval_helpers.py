@@ -16,7 +16,7 @@ g["ENV_BOOTSTRAP"] = dict(in_colab=False, work_dir=os.path.join(TEST_WORK, "ao_w
                           eval_env_dir=os.path.join(TEST_WORK, "ao_work_evaltest", "eval_env"), eval_pip_pinned=[], uv_cmd=["uv"],
                           uv_cache_dir="", uv_python_install_dir="")
 exec(compile(open(os.path.join(SRC, "cells", "03_config.py")).read(), "03_config.py", "exec"), g)
-g.update(GPU_PROFILE="official", N_GPUS=0, HF_API=None, HF_CKPT_REPO_ID=None, TRAIN_RESULTS={})
+g.update(GPU_PROFILE="official", N_GPUS=0, HF_API=None, HF_CKPT_REPO_ID=None, TRAIN_RESULTS={}, RECORD_DIR=os.path.join(TEST_WORK, "ao_work_evaltest", "records"))
 exec(compile(open(os.path.join(SRC, "cells", "14_section9_eval.py")).read(), "14_section9_eval.py", "exec"), g)
 
 # 1. 公式スクリプトの絶対パスへのリンクと、公式のローダー・キーでデータが読めること
@@ -52,6 +52,8 @@ assert ns["score"]("\\frac{1}{2}", ["\\boxed{0.5}"]) == [True]
 print("dev scorer OK")
 
 # 4. 論文の値
-assert g["paper_reference"]("ao", 640, "MATH500") == 56.2 and g["paper_reference"]("ao", 640, "AIME24") == 5.0
+assert g["paper_reference"]("ao", 640, "MATH500", "default（Sec. 2.1, Tab. 3）") == 56.2 and g["paper_reference"]("ao", 640, "AIME24", "default（Sec. 2.1, Tab. 3）") == 5.0
+assert g["paper_reference"]("ao", 640, "MATH500", "Sec. 3.4 Setting 4") is None and g["paper_reference"]("ao", 640, "MATH500", None) is None   # 既定条件以外には並べない
+assert g["paper_reference"]("cot", 640, "MATH500") == 56.2
 assert g["paper_reference"]("base", 0, "MATH500") == 58.9 and g["paper_reference"]("ao", 30, "MATH500") is None
 print("ALL EVAL HELPER TESTS PASSED")

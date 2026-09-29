@@ -250,6 +250,8 @@ def official_micro_batches(file_source_rows, world, global_batch, micro):
 
 def normalize_run(entry):
     """SEARCH_RUN_LIST の要素 (lr, epochs) / (lr, epochs, scheduler) を (lr, epochs, scheduler) にそろえる"""
+    assert isinstance(entry, (list, tuple)) and len(entry) in (2, 3), \
+        f"探索候補は (lr, epochs) か (lr, epochs, scheduler) のタプルで書く（旧形式の {{'lr': [...], 'epochs': [...]}} は使えない）: {entry!r}"
     lr, ep, *rest = entry
     sched = rest[0] if rest else "cosine"
     assert sched in ("cosine", "constant"), f"lr_scheduler は論文で使われた cosine / constant のみ: {sched}"

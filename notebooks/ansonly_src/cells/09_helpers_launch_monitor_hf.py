@@ -490,9 +490,16 @@ def download_hf_checkpoint(run_id, step, revision=None):
             bad.append((e["path"], "sha256"))
     if bad:
         raise RuntimeError(f"取得した checkpoint が manifest と一致しない: {bad[:5]}")
-    # 公式の latest tracker も揃えておく（resume_path モードでは使われないが、ディレクトリ構成を学習時と同じにする）
-    with open(os.path.join(os.path.dirname(local), "latest_checkpointed_iteration.txt"), "w") as f:
-        f.write(str(step))
+    # 公式の latest tracker も揃えておく（resume_path モードでは使われないが、ディレクトリ構成を学習時と同じにする）。
+    # 既存の値より大きいときだけ書く（小さい値にすると、ローカルに残した新しい step の checkpoint が「未完了」と判定される）
+    _tracker = os.path.join(os.path.dirname(local), "latest_checkpointed_iteration.txt")
+    try:
+        _prev = int(open(_tracker).read().strip())
+    except (OSError, ValueError):
+        _prev = -1
+    if step > _prev:
+        with open(_tracker, "w") as f:
+            f.write(str(step))
     ok, _ = checkpoint_is_complete(local, manifest["world_size"], require_stable=False, content=manifest.get("content", "full"))
     assert ok, "必要ファイル（model/optim/extra の各 rank shard, data.pt, fsdp_config.json, huggingface/）が揃っていない"
     manifest["folder_commit"] = marker.get("folder_commit")

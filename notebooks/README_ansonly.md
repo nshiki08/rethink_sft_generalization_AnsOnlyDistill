@@ -27,7 +27,7 @@
 | 探索候補 | `SEARCH_GRID_PROPOSED`（提案 = 論文が 14B で行った 6 条件）/ `SEARCH_GRID_CONFIRMED`（確定）/ `SEARCH_RUN_LIST`（実行する `(lr, epochs, scheduler)`） | 提案のみ |
 | 最大系列長 | `MAX_LENGTH_MODE` | `"auto_fit"`（全行が収まる長さ。`"official"` で 20000 に戻せる） |
 | 保存周期 | `SAVE_FREQ` | 10（公式 CoT と同じ。保存は学習結果に影響しない） |
-| HF へ転送する step | `HF_UPLOAD_STEPS` | `"cot_public+resume"`（公開 CoT 学生と同じ step 10, 20, 40, 80, 160, 320, 480, 640 と `RESUME_CKPT_EVERY` の倍数。それ以外はローカルで削除）/ `"all"` |
+| HF へ転送する step | `HF_UPLOAD_STEPS` | `"cot_public+resume"`（論文が評価した step 10, 20, 40, 80, 160, 320, 480, 640（16 epoch は 1280 まで）と `RESUME_CKPT_EVERY` の倍数。それ以外はローカルで削除）/ `"all"` |
 | 再開用の間隔 | `RESUME_CKPT_EVERY` | 80（optimizer 状態込みで送る間隔。切断時は最大この step 数を再実行） |
 | 分析用 step の中身 | `HF_ANALYSIS_STEP_CONTENT` | `"model_only"`（再開用以外の step は重みだけ送る。変換・分析はできるが再開はできない）/ `"full"` |
 | 公式 8 GPU の再現 | `EMULATE_OFFICIAL_WORLD_SIZE` | `True`（下記） |

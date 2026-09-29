@@ -28,6 +28,9 @@ PIP_PINNED = [
     "Jinja2==3.1.6",                          # chat template の描画に使われ、プロンプトの token に影響し得るので公式と揃える
     "pandas==2.3.3",                          # 公式 requirements.txt に pin が無い（setup.py は無指定）。導入時期で 3.x に変わらないよう 2.x の最終版に固定する
 ]
+# 直接の pin に加え、公式 requirements.txt（clone した Fork にある）を制約 -c として使い、間接的な依存も公式と同じ版にそろえる。
+# requirements.txt 自体に矛盾する pin が 2 つある（protobuf 5.29.5 と opentelemetry-proto の <5、typer 0.9.4 と fastapi-cli の >=0.15.1）ので外す
+CONSTRAINT_EXCLUDE = ["protobuf", "typer"]
 KERNEL_PACKAGES = ["ipykernel==6.29.5"]   # 公式環境側でカーネルを動かすためだけに使う（学習には関与しない）
 EXTRA_PIP_PACKAGES = []                   # import 確認で不足が出た場合に追加
 
@@ -36,13 +39,14 @@ FLASH_ATTN_VERSION = "2.7.4.post1"        # 公式 pin。両プロファイル�
 GPU_PROFILES = {
     # A100 / L4 / H100 など（compute capability 8.x, 9.x）: 公式 requirements.txt のまま
     "official": dict(torch=["torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0"], index_url=None, pin_overrides={},
-                     flash_attn_wheel=f"{_FA}+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl", cxx11abi=False, nccl=[2, 21, 5],
+                     flash_attn_wheel=f"{_FA}+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl", cxx11abi=False, nccl=[2, 21, 5], constraint_exclude=[],
                      deviation=None),
     # G4（RTX PRO 6000 Blackwell, sm_120）など compute capability 10 以上: torch 2.6.0 には sm_100/sm_120 のコードが無く動かない。
     # sm_120 に対応した最初の公式 torch は 2.7.0（cu128）。flash-attn は同じ 2.7.4.post1 の torch2.7 用 wheel（sm_120 を含む）。
     # torch 2.7.1 は sympy>=1.13.3 を要求するので、公式の sympy==1.13.1 と両立しない（1.13.3 に上げる）。
     "blackwell": dict(torch=["torch==2.7.1+cu128", "torchvision==0.22.1+cu128", "torchaudio==2.7.1+cu128"],
                       index_url="https://download.pytorch.org/whl/cu128", pin_overrides={"sympy": "sympy==1.13.3"},
+                      constraint_exclude=["torch", "torchvision", "torchaudio", "triton", "sympy", "xformers", "vllm", "nvidia-*"],
                       flash_attn_wheel=f"{_FA}+cu12torch2.7cxx11abiTRUE-cp312-cp312-linux_x86_64.whl", cxx11abi=True, nccl=[2, 26, 2],
                       deviation="torch 2.6.0 → 2.7.1+cu128（torchvision/torchaudio も対応版）、flash-attn は同版の torch2.7 用 wheel、"
                                 "sympy 1.13.1 → 1.13.3（torch 2.7.1 の要求。math-verify の照合結果はセクション 3 のゲートで確認）。"
@@ -200,9 +204,29 @@ except RuntimeError:
 UV = [sys.executable, "-m", "uv", "--no-config"]
 _pins = [PROFILE["pin_overrides"].get(p.split("==")[0].split("[")[0].lower(), p) for p in PIP_PINNED + EXTRA_PIP_PACKAGES]
 
+def write_constraints(path, exclude):
+    """公式 requirements.txt の == 行を制約ファイルにする（exclude は小文字・ハイフン区切りの名前か glob）"""
+    import fnmatch
+    keep, dropped = [], []
+    for line in open(f"{REPO_DIR}/requirements.txt"):
+        line = line.split("#")[0].strip()
+        if "==" not in line:
+            continue
+        name = line.split("==")[0].strip().lower().replace("_", "-")
+        (dropped if any(fnmatch.fnmatch(name, pat) for pat in exclude) else keep).append(line)
+    with open(path, "w") as f:
+        f.write("\n".join(keep) + "\n")
+    return keep, dropped
+
+
+TRAIN_CONSTRAINTS = f"{WORK_DIR}/constraints_train_{GPU_PROFILE}.txt"
+_cons_keep, _cons_dropped = write_constraints(TRAIN_CONSTRAINTS, CONSTRAINT_EXCLUDE + PROFILE["constraint_exclude"])
+EVAL_CONSTRAINTS = f"{WORK_DIR}/constraints_eval.txt"          # 評価用環境（vLLM 0.8.5、official プロファイルのみ）
+write_constraints(EVAL_CONSTRAINTS, CONSTRAINT_EXCLUDE)
+print(f"公式 requirements.txt を制約に使う: {len(_cons_keep)} 件（除外 {len(_cons_dropped)} 件: {sorted(set(l.split('==')[0] for l in _cons_dropped))}）")
 _torch_index = os.environ.get("AO_TORCH_INDEX_URL") or PROFILE["index_url"]   # AO_TORCH_INDEX_URL はローカル（CPU）検証用
 _want = dict(python=TRAIN_PYTHON_VERSION, torch=PROFILE["torch"], index=_torch_index, pins=_pins + KERNEL_PACKAGES,
-             flash_attn=PROFILE["flash_attn_wheel"] if GPU_CAP else None)
+             flash_attn=PROFILE["flash_attn_wheel"] if GPU_CAP else None, constraints=_cons_keep)
 _want_hash = hashlib.sha256(json.dumps(_want, sort_keys=True).encode()).hexdigest()[:16]
 _marker = f"{TRAIN_ENV_DIR}/ao_env_ok.json"
 if os.path.isfile(_marker) and json.load(open(_marker)).get("hash") == _want_hash and os.path.isfile(TRAIN_PY):
@@ -213,11 +237,14 @@ else:
     sh(UV + ["venv", "--quiet", "--python", TRAIN_PYTHON_VERSION, "--python-preference", "only-managed", TRAIN_ENV_DIR], env=_uv_env)
     _idx = ["--index-url", _torch_index, "--extra-index-url", "https://pypi.org/simple", "--index-strategy", "unsafe-best-match"] if _torch_index else []
     print(f"公式 pin を導入中（{len(_want['pins']) + 3} packages。数分かかる）...")
-    sh(UV + ["pip", "install", "--quiet", "--python", TRAIN_PY] + _idx + PROFILE["torch"] + _want["pins"], env=_uv_env)
+    sh(UV + ["pip", "install", "--quiet", "--python", TRAIN_PY, "-c", TRAIN_CONSTRAINTS] + _idx + PROFILE["torch"] + _want["pins"], env=_uv_env)
     if GPU_CAP:
         # flash-attn: 公式 trainer は attn_implementation='flash_attention_2' 固定。依存（torch, einops）は導入済みなので --no-deps
         sh(UV + ["pip", "install", "--quiet", "--python", TRAIN_PY, "--no-deps", PROFILE["flash_attn_wheel"]], env=_uv_env)
     json.dump(dict(hash=_want_hash, want=_want, created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())), open(_marker, "w"), indent=2)
+TRAIN_ENV_FREEZE = f"{RECORD_DIR}/train_env_freeze.txt"   # 公式環境の全パッケージの版（記録）
+with open(TRAIN_ENV_FREEZE, "w") as f:
+    f.write(sh(UV + ["pip", "freeze", "--python", TRAIN_PY], env=_uv_env) + "\n")
     print(f"公式環境を作成した: {TRAIN_ENV_DIR}（{time.time() - t0:.0f} 秒）")
 
 # ---- 1.5 公式環境の確認（Python, torch, GPU アーキテクチャ, flash-attn, 公式 trainer の import） -------------------
@@ -294,7 +321,8 @@ ENV_BOOTSTRAP = dict(
     official_code_unchanged=OFFICIAL_CODE_UNCHANGED, official_diff_stat=OFFICIAL_DIFF_STAT,
     # セクション 9 が評価用の環境を作るときに使う（uv は Colab のカーネルの Python に入っている）
     uv_cmd=UV, uv_cache_dir=_uv_env["UV_CACHE_DIR"], uv_python_install_dir=_uv_env["UV_PYTHON_INSTALL_DIR"],
-    eval_env_dir=f"{WORK_DIR}/eval_env", eval_pip_pinned=EVAL_PIP_PINNED,
+    eval_env_dir=f"{WORK_DIR}/eval_env", eval_pip_pinned=EVAL_PIP_PINNED, eval_constraints=EVAL_CONSTRAINTS,
+    train_constraints=TRAIN_CONSTRAINTS, constraint_excluded=_cons_dropped, train_env_freeze=TRAIN_ENV_FREEZE,
 )
 ENV_BOOTSTRAP_PATH = f"{RECORD_DIR}/env_bootstrap.json"
 json.dump(ENV_BOOTSTRAP, open(ENV_BOOTSTRAP_PATH, "w"), indent=2, ensure_ascii=False)

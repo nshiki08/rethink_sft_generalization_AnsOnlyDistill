@@ -71,21 +71,40 @@ for prof_name, prof in g["GPU_PROFILES"].items():
     pins = [prof["pin_overrides"].get(p.split("==")[0].split("[")[0].lower(), p) for p in g["PIP_PINNED"]] + g["KERNEL_PACKAGES"]
     req = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
     req.write("\n".join(prof["torch"] + pins) + "\n"); req.close()
+    cons = req.name + ".constraints.txt"
+    g["write_constraints"](cons, g["CONSTRAINT_EXCLUDE"] + prof["constraint_exclude"])   # セル 1 と同じ制約（公式 requirements.txt）
     idx = ["--index-url", prof["index_url"], "--extra-index-url", "https://pypi.org/simple", "--index-strategy", "unsafe-best-match"] if prof["index_url"] else []
-    r = subprocess.run(g["UV"] + ["pip", "compile", "--quiet", "--python-version", "3.12", "--python-platform", "x86_64-manylinux_2_28", req.name] + idx,
+    r = subprocess.run(g["UV"] + ["pip", "compile", "--quiet", "--python-version", "3.12", "--python-platform", "x86_64-manylinux_2_28", req.name, "-c", cons] + idx,
                        capture_output=True, text=True, env=g["_uv_env"])
     assert r.returncode == 0, f"profile {prof_name}: pins do not resolve\n{r.stderr[-2000:]}"
     lock = {l.split("==")[0]: l.split("==")[1].split()[0] for l in r.stdout.splitlines() if "==" in l and not l.startswith("#")}
-    print(f"profile {prof_name}: resolves (torch {lock.get('torch')}, sympy {lock.get('sympy')}, numpy {lock.get('numpy')}, nvidia-nccl-cu12 {lock.get('nvidia-nccl-cu12')})")
+    print(f"profile {prof_name}: resolves with requirements.txt constraints (torch {lock.get('torch')}, sympy {lock.get('sympy')}, numpy {lock.get('numpy')}, "
+          f"ray {lock.get('ray')}, nvidia-nccl-cu12 {lock.get('nvidia-nccl-cu12')})")
 
 # ---- 論文の数学評価用の環境（vLLM 0.8.5）の依存解決（GPU 不要）
 req = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
 req.write("\n".join(g["EVAL_PIP_PINNED"]) + "\n"); req.close()
-r = subprocess.run(g["UV"] + ["pip", "compile", "--quiet", "--python-version", "3.12", "--python-platform", "x86_64-manylinux_2_28", req.name],
-                   capture_output=True, text=True, env=g["_uv_env"])
+r = subprocess.run(g["UV"] + ["pip", "compile", "--quiet", "--python-version", "3.12", "--python-platform", "x86_64-manylinux_2_28", req.name,
+                              "-c", g["EVAL_CONSTRAINTS"]], capture_output=True, text=True, env=g["_uv_env"])
 assert r.returncode == 0, f"eval env pins do not resolve\n{r.stderr[-2000:]}"
 lock = {l.split("==")[0]: l.split("==")[1].split()[0] for l in r.stdout.splitlines() if "==" in l and not l.startswith("#")}
-print(f"eval env: resolves (vllm {lock.get('vllm')}, torch {lock.get('torch')}, xformers {lock.get('xformers')}, numpy {lock.get('numpy')})")
+assert lock.get("openai") == "1.102.0" and lock.get("ray") == "2.43.0", lock   # 間接的な依存も requirements.txt の版
+print(f"eval env: resolves (vllm {lock.get('vllm')}, torch {lock.get('torch')}, xformers {lock.get('xformers')}, openai {lock.get('openai')}, ray {lock.get('ray')})")
+
+# ---- 公式環境カーネルから起動した subprocess で matplotlib が import できること（ipykernel が MPLBACKEND を inline 用に設定する問題の回帰テスト）
+k.run('''
+import subprocess, os
+_uv = ENV_BOOTSTRAP["uv_cmd"]; _d = WORK_DIR + "/mpl_test_env"
+_env = {k: v for k, v in os.environ.items() if not k.startswith("UV_")}
+_env.update(UV_CACHE_DIR=ENV_BOOTSTRAP["uv_cache_dir"], UV_PYTHON_INSTALL_DIR=ENV_BOOTSTRAP["uv_python_install_dir"])
+if not os.path.isfile(_d + "/bin/python"):
+    subprocess.run(_uv + ["venv", "--quiet", "--python", "3.12", "--python-preference", "only-managed", _d], check=True, env=_env)
+    subprocess.run(_uv + ["pip", "install", "--quiet", "--python", _d + "/bin/python", "matplotlib==3.10.3"], check=True, env=_env)
+_r = subprocess.run([_d + "/bin/python", "-c", "import matplotlib.pyplot, matplotlib; print('MPL_OK', matplotlib.get_backend())"], capture_output=True, text=True, env=dict(os.environ))
+print(_r.stdout.strip(), _r.stderr[-300:])
+assert "MPL_OK" in _r.stdout, "subprocess で matplotlib が import できない（MPLBACKEND）"
+''')
+print("matplotlib in subprocess from the official-env kernel OK")
 
 # ---- セル 1 の再実行: 前回の公式環境カーネルと、残った学習プロセス（模擬）を終了する
 fake = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)", "torch.distributed.run"], start_new_session=True)

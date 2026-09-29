@@ -73,4 +73,4 @@ Colab では 1 GPU で学習するので、公式コードを変えずに 8 GPU 
 
 - 既定は `EMULATE_OFFICIAL_WORLD_SIZE=True`。本学習セルは `VIEW_CHECK_OK` と `order_sha256` の一致を要求する
 - `MICRO_BATCH_OVERRIDE=None`、`CPU_OFFLOAD_OVERRIDE=None` を既定とし、変えた場合は公式との差として記録する
-- checkpoint は公式と同じ `SAVE_FREQ=10`。HF へ送るのは公開 CoT 学生と同じ step（10, 20, 40, 80, 160, 320, 480, 640）と 40 step ごと（`HF_UPLOAD_STEPS="cot_public+resume"`）
+- checkpoint は公式と同じ `SAVE_FREQ=10`。HF へ送るのは論文が評価した step（10, 20, 40, 80, 160, 320, 480, 640、16 epoch は 1280 まで）と 80 step ごと（`HF_UPLOAD_STEPS="cot_public+resume"`, `RESUME_CKPT_EVERY=80`）

@@ -16,6 +16,8 @@ assert platform.python_version() == TORCH_PROBE["python"] and sys.prefix == ENV_
     f"このセルは公式環境のカーネルで実行する（%%ao）。python={platform.python_version()} prefix={sys.prefix}"
 if REPO_DIR not in sys.path:
     sys.path.insert(0, REPO_DIR)
+# ipykernel はこのカーネルの MPLBACKEND を inline 用の値にする。subprocess（学習・評価）の環境には matplotlib_inline が無いので、描画しない Agg にする
+os.environ["MPLBACKEND"] = "Agg"
 
 _mem = {}
 for line in open("/proc/meminfo"):

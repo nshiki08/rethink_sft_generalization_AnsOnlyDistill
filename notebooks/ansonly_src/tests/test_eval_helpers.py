@@ -49,4 +49,10 @@ assert g["paper_reference"]("ao", 640, "MATH500", "default（Sec. 2.1, Tab. 3）
 assert g["paper_reference"]("ao", 640, "MATH500", "Sec. 3.4 Setting 4") is None and g["paper_reference"]("ao", 640, "MATH500", None) is None   # 既定条件以外には並べない
 assert g["paper_reference"]("cot", 640, "MATH500") == 56.2
 assert g["paper_reference"]("base", 0, "MATH500") == 58.9 and g["paper_reference"]("ao", 30, "MATH500") is None
+_mk = g["MODEL_KEY"]
+g["MODEL_KEY"] = "Qwen3-8B"
+assert g["paper_reference"]("ao", 640, "AIME24", "default（Sec. 2.1, Tab. 3）") == 47.7 and g["paper_reference"]("base", 0, "MATH500") == 76.8
+g["MODEL_KEY"] = "Qwen3-14B"
+assert g["paper_reference"]("ao", 640, "MATH500", "default（Sec. 2.1, Tab. 3）") == 95.1 and g["paper_reference"]("base", 0, "AIME24") == 14.7
+g["MODEL_KEY"] = _mk
 print("ALL EVAL HELPER TESTS PASSED")

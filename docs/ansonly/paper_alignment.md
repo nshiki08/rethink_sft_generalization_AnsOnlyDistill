@@ -56,9 +56,9 @@
 | 指標 | MATH500 avg@3, AIME24 avg@10（App. B.4） | 同じ（スクリプトの `average_pass_rate`） | なし |
 | prompt | chat template、system prompt なし（App. B.5） | 同じ（スクリプトの `build_prompt`。学習の prompt と違い `\n` の後に空白が 1 つ入る点も公式どおり） | なし |
 | 採点 | math-verify | 同じ | なし |
-| GPU | 2 × H200（tensor parallel 2） | 1 GPU（tensor parallel 1） | 数値がわずかに変わると temperature 0.6 のサンプリング結果も変わる。論文値とはサンプリングの揺らぎの範囲（AIME24 は 30 問なので数ポイント）で異なり得る。CoT と厳密に比べるなら CoT も同じ環境で評価する（`PAPER_EVAL_COT_STEPS`） |
+| GPU | 2 × H200（tensor parallel 2） | 1 GPU（tensor parallel 1） | 数値がわずかに変わると temperature 0.6 のサンプリング結果も変わる。論文値とはサンプリングの揺らぎの範囲（AIME24 は 30 問なので数ポイント）で異なり得る。**CoT と Base は論文の値を使い、この差は許容する（決定済み）**。研究の主張は CoT と AO の差が大きいかどうかで、この程度の差では変わらない前提。必要になれば `PAPER_EVAL_COT_STEPS` / `PAPER_EVAL_BASE` で同じ環境で測れる |
 | vLLM | 0.8.5（requirements.txt）、XFORMERS backend | 同じ。学習用とは別の Python 3.12 環境に入れ、間接的な依存も requirements.txt の版に制約する（矛盾する protobuf / typer を除く） | protobuf と typer の版。G4 は vLLM 0.8.5 非対応のため評価は A100 で行う |
 | 評価する step | 10, 20, 40, 80, 160, 320, 480, 640（16 epoch は 1280 まで） | 同じ（HF に送る step もこれに合わせた） | なし |
 | 数学以外 | LiveCodeBench v2, GPQA-Diamond, MMLU-Pro, IFEval, AlpacaEval, HaluEval, TruthfulQA, HEx-PHI（Sec. 2.2。分野外への汎化を測る） | 行わない | 研究目的（数学能力への CoT の寄与）の対象外 |
 
-論文の値（App. D Table 18〜24、1.7B/4B の Base・CoT・NoCoT の MATH500/AIME24）は設定セルの `PAPER_REFERENCE` にあり、セクション 9 の表に同じ step の CoT の値を並べて表示する。
+論文の値（App. D Table 18〜32、1.7B/4B/8B/14B の Base・CoT・NoCoT の MATH500/AIME24）は設定セルの `PAPER_REFERENCE` にあり、セクション 9 の表に同じ step の CoT の値を並べて表示する。

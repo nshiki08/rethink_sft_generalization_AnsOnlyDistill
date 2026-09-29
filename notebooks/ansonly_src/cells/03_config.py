@@ -186,11 +186,11 @@ PAPER_EVAL_ENABLED = False        # True で実行（学習が終わってから
 PAPER_EVAL_DATASETS = ["MATH500", "AIME24"]
 PAPER_EVAL_AO_RUNS = None         # 評価する AO run の run_id のリスト。None → このセッションで学習した run
 PAPER_EVAL_AO_STEPS = "paper"     # "paper" → PAPER_EVAL_STEPS のうち HF にある step（論文と同じ報告方法: 各 step の推移）/ 整数のリスト
-PAPER_EVAL_BASE = False           # Base（step 0）も評価する。論文の値は PAPER_REFERENCE にある
-PAPER_EVAL_COT_STEPS = []         # 公開 CoT 学生のうち再評価する step（例 [640]）。CoT は出力が長く 1 step で数時間かかる。論文の値は PAPER_REFERENCE
+PAPER_EVAL_BASE = False           # Base（step 0）も評価する。既定 False: Base は論文の値（PAPER_REFERENCE）を使うと決定済み
+PAPER_EVAL_COT_STEPS = []         # 公開 CoT 学生のうち再評価する step（例 [640]）。既定 []: CoT は論文の値（PAPER_REFERENCE）を使うと決定済み（評価環境の差は許容）
 PAPER_EVAL_DELETE_MERGED = True   # 評価後に変換済みの AO 重みをローカルから消す（ディスク節約。HF の checkpoint は残る）
 
-# 論文の値（App. D Table 18〜24、数学のみ。MATH500 avg@3 / AIME24 avg@10、%）。比較の表示に使う。NoCoT は step 20 の報告なし
+# 論文の値（App. D Table 18〜32、数学のみ。1.7B / 4B / 8B / 14B の Base・CoT・NoCoT。MATH500 avg@3 / AIME24 avg@10、%）。比較の表示に使う。NoCoT は step 20 の報告なし
 PAPER_REFERENCE = {
     "Qwen3-1.7B": {
         "base": {"MATH500": 58.9, "AIME24": 5.7},
@@ -203,6 +203,18 @@ PAPER_REFERENCE = {
         "Math-CoT": {10: (64.9, 9.0), 20: (62.9, 13.0), 40: (71.5, 15.3), 80: (77.1, 19.0), 160: (78.8, 22.3), 320: (86.3, 29.0), 480: (87.1, 27.3), 640: (86.2, 30.7)},
         "Math-NoCoT": {10: (66.7, 7.7), 40: (73.2, 10.0), 80: (72.9, 9.7), 160: (74.3, 9.0), 320: (75.9, 11.3), 480: (74.5, 11.3), 640: (74.3, 11.7)},
         "source": "Table 18, 22, 24",
+    },
+    "Qwen3-8B": {
+        "base": {"MATH500": 76.8, "AIME24": 12.0},
+        "Math-CoT": {10: (72.7, 11.0), 20: (44.4, 8.0), 40: (78.2, 21.7), 80: (81.9, 23.0), 160: (88.5, 32.0), 320: (89.8, 36.0), 480: (92.3, 43.7), 640: (90.1, 47.7)},
+        "Math-NoCoT": {10: (71.3, 9.3), 40: (76.1, 11.7), 80: (75.8, 9.7), 160: (78.0, 12.7), 320: (77.9, 13.7), 480: (76.3, 15.7), 640: (77.4, 13.3)},
+        "source": "Table 18, 25, 27",
+    },
+    "Qwen3-14B": {
+        "base": {"MATH500": 77.8, "AIME24": 14.7},
+        "Math-CoT": {10: (79.2, 11.3), 20: (68.2, 25.7), 40: (88.3, 38.0), 80: (91.3, 50.7), 160: (93.7, 55.3), 320: (95.1, 60.3), 480: (94.9, 68.0), 640: (95.1, 66.0)},
+        "Math-NoCoT": {10: (75.0, 15.3), 40: (80.5, 15.0), 80: (80.7, 14.3), 160: (81.1, 16.3), 320: (81.5, 18.0), 480: (81.5, 17.0), 640: (82.4, 17.0)},
+        "source": "Table 18, 30, 32",
     },
 }
 

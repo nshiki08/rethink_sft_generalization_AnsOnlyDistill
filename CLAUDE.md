@@ -2,6 +2,7 @@
 
 この Fork は論文 "Rethinking SFT Generalization" の公式実装に、Answer-only (AO) 蒸留の Colab ノートブックを追加したもの。
 AO 学生 = 教師 Qwen3-32B の最終回答 `\boxed{...}` だけを target にして、公開 CoT 学生と同じ条件で Base から Full-parameter SFT した学生。
+研究目的: CoT 蒸留学生と AO 蒸留学生を論文と同じ MATH500 / AIME24 で比べ、数学能力の向上に CoT が寄与しているかを調べる。論文の数学以外の評価は対象外。
 
 ## 必ず守る
 

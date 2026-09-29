@@ -106,8 +106,8 @@ MATH500 は avg@3、AIME24 は avg@10（%）。括弧内は同じ step の公開
 
 loss の低下だけで能力向上は主張しない。上の表が「未実施」なら性能は未測定。
 
-## 未実施・未確認
-- 論文の数学以外の評価（LiveCodeBench, GPQA-Diamond, MMLU-Pro, IFEval, AlpacaEval, HaluEval, TruthfulQA, HEx-PHI）は未実施（公式リポジトリにデータや判定モデルが同梱されていないものがある）。
+## 評価の範囲
+- 研究目的は数学能力への CoT の寄与を調べることなので、評価は MATH500 / AIME24 だけ。論文の数学以外の評価（LiveCodeBench, GPQA-Diamond, MMLU-Pro, IFEval, AlpacaEval, HaluEval, TruthfulQA, HEx-PHI）は行っていない。
 """
     with open(os.path.join(MERGED_DIR, "..", "README.md"), "w") as f:
         f.write(MODEL_CARD)
@@ -136,5 +136,5 @@ loss の低下だけで能力向上は主張しない。上の表が「未実施
     FINAL_MODEL["generation_check"] = GEN_CHECK
     _own_results = [r for r in globals().get("TRAIN_RESULTS", {}).values() if r["run_id"] == _final_rid]
     write_experiment_record(_saved_spec, _own_results, evaluations=_paper_evals, final_model=FINAL_MODEL,
-                            unverified=(["論文と同じ評価（MATH500/AIME24）未実施"] if not _paper_evals else []) + ["数学以外のベンチマーク未評価"] +
+                            unverified=(["論文と同じ評価（MATH500/AIME24）未実施"] if not _paper_evals else []) +
                                        (["このセッションの学習ログなし（HF の experiment_record を参照）"] if not _own_results else []))

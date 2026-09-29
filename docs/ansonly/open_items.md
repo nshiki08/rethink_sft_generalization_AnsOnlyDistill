@@ -67,4 +67,3 @@ math-verify 0.7.0 が失敗する理由（`math_verify/grader.py`）:
 - `verl.model_merger` による変換と最終モデルの読み込み・生成
 - 重みのみの checkpoint の HF 転送と、そこからの変換
 - 論文と同じ評価（セクション 9）: 評価用環境（vLLM 0.8.5）の作成、生成、所要時間。CPU ではデータの読み込み、結果ファイルの読み取り、採点だけ確認した
-- 数学以外の論文の評価（GPQA-Diamond, IFEval などは未実装）

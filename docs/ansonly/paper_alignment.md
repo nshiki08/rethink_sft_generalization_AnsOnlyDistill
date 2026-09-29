@@ -1,6 +1,7 @@
 # 論文の設定との対応
 
 出典: 論文 arXiv 2604.06628 v2（2026-08-15、COLM 2026 camera-ready）。公式コードは参照 commit `71a442e`。
+研究目的: CoT 蒸留学生と AO 蒸留学生を MATH500 / AIME24 で比べ、数学能力の向上に CoT が寄与しているかを調べる。評価は論文の数学評価だけを使う。
 方針: 論文と変えてよいのは **AO の target** と **ハイパラ探索** だけ。それ以外は論文と同じにし、揃えられないものは理由と影響を記録する。
 
 ## 1. 論文に dev はあるか
@@ -58,6 +59,6 @@
 | GPU | 2 × H200（tensor parallel 2） | 1 GPU（tensor parallel 1） | 数値がわずかに変わると temperature 0.6 のサンプリング結果も変わる。論文値とはサンプリングの揺らぎの範囲（AIME24 は 30 問なので数ポイント）で異なり得る。CoT と厳密に比べるなら CoT も同じ環境で評価する（`PAPER_EVAL_COT_STEPS`） |
 | vLLM | 0.8.5（requirements.txt）、XFORMERS backend | 同じ。学習用とは別の Python 3.12 環境に入れ、間接的な依存も requirements.txt の版に制約する（矛盾する protobuf / typer を除く） | protobuf と typer の版。G4 は vLLM 0.8.5 非対応のため評価は A100 で行う |
 | 評価する step | 10, 20, 40, 80, 160, 320, 480, 640（16 epoch は 1280 まで） | 同じ（HF に送る step もこれに合わせた） | なし |
-| 数学以外 | LiveCodeBench v2, GPQA-Diamond, MMLU-Pro, IFEval, AlpacaEval, HaluEval, TruthfulQA, HEx-PHI | 未実装 | 公式リポジトリに MMLU-Pro / HaluEval / TruthfulQA / LiveCodeBench のデータが無く、判定モデルの場所も作者の環境に固定されている。GPQA-Diamond と IFEval はデータがあり追加可能 |
+| 数学以外 | LiveCodeBench v2, GPQA-Diamond, MMLU-Pro, IFEval, AlpacaEval, HaluEval, TruthfulQA, HEx-PHI（Sec. 2.2。分野外への汎化を測る） | 行わない | 研究目的（数学能力への CoT の寄与）の対象外 |
 
 論文の値（App. D Table 18〜24、1.7B/4B の Base・CoT・NoCoT の MATH500/AIME24）は設定セルの `PAPER_REFERENCE` にあり、セクション 9 の表に同じ step の CoT の値を並べて表示する。

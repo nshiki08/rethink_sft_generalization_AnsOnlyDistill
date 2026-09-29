@@ -24,7 +24,7 @@
 | 実行モード | `RUN_MODE` | `"dry_run"`（学習も HF 書き込みもしない） / `"trial"` / `"train"` |
 | run の種類 | `RUN_KIND` | `"baseline"`（公式 CoT 設定 lr 5e-5 / 8 epoch）/ `"search"` |
 | 対象モデル | `MODEL_KEY` | `"Qwen3-1.7B"`（`SUPPORTED_MODELS` から選ぶ。Qwen2.5 系は理由付きで blocked） |
-| 探索候補 | `SEARCH_GRID_PROPOSED`（提案）/ `SEARCH_GRID_CONFIRMED`（確定）/ `SEARCH_RUN_LIST`（実行する組） | 提案のみ |
+| 探索候補 | `SEARCH_GRID_PROPOSED`（提案 = 論文が 14B で行った 6 条件）/ `SEARCH_GRID_CONFIRMED`（確定）/ `SEARCH_RUN_LIST`（実行する `(lr, epochs, scheduler)`） | 提案のみ |
 | 最大系列長 | `MAX_LENGTH_MODE` | `"auto_fit"`（全行が収まる長さ。`"official"` で 20000 に戻せる） |
 | 保存周期 | `SAVE_FREQ` | 10（公式 CoT と同じ。保存は学習結果に影響しない） |
 | HF へ転送する step | `HF_UPLOAD_STEPS` | `"cot_public+resume"`（公開 CoT 学生と同じ step 10, 20, 40, 80, 160, 320, 480, 640 と `RESUME_CKPT_EVERY` の倍数。それ以外はローカルで削除）/ `"all"` |
@@ -34,7 +34,8 @@
 | HF 保存先 | `HF_CKPT_REPO_ID` / `HF_FINAL_MODEL_REPO_ID` | `None` → HF の whoami から決める |
 | 試走 | `TRIAL_NUM_ROWS`, `TRIAL_EPOCHS`, `TRIAL_SAVE_FREQ`, `TRIAL_KILL_AFTER_STEP` | 512 行 / 4 epoch / 3 / 3 |
 | 再開 | `RESUME_RUN_ID`, `RESUME_STEP` | `None` / `"latest"` |
-| dev 評価 | `DEV_EVAL_ENABLED`, `DEV_EVAL_SOURCE` など | 無効（dev 未確定） |
+| 論文と同じ評価 | `PAPER_EVAL_ENABLED`, `PAPER_EVAL_AO_STEPS`, `PAPER_EVAL_BASE`, `PAPER_EVAL_COT_STEPS` | 無効（学習後に有効にする） |
+| dev 評価（論文には無い） | `DEV_EVAL_ENABLED`, `DEV_EVAL_SOURCE` など | 無効 |
 
 ### 公式 CoT 学習（8 GPU）との条件合わせ
 
@@ -86,6 +87,10 @@ bf16 で残る差は、fp32 では一致する 2 つの計算どうしでも同�
 試走 run の再開は同じセッション内でだけ成立する（試走データは 6-b が作るため）。
 
 本学習は `RUN_MODE="train"`、`RUN_KIND="baseline"` で 7、`RUN_KIND="search"` かつ `SEARCH_RUN_LIST` を設定して 8。
+
+評価（セクション 9-a）は論文と同じ方法: 公式の `evaluation/math_eval/math_eval_budget.py` を無変更で実行する（MATH500 avg@3、AIME24 avg@10、temperature 0.6、最大 32768 token、math-verify）。
+学習が終わってから `PAPER_EVAL_ENABLED=True` にする。初回は評価用の環境（Python 3.12 + vLLM 0.8.5）を作る。論文と同じく各 step（10〜640）の推移を評価し、同じ step の公開 CoT 学生の論文値を並べて表示する。
+G4 では vLLM 0.8.5 が動かないので、評価は A100 のランタイムで行う。論文との対応の一覧は `docs/ansonly/paper_alignment.md`。
 学習中は 1 セルが終了まで動き続け、監視スレッドが保存完了ごとに checkpoint を HF の
 `runs/<run_id>/global_step_<N>/` へ転送・検証し、完了マーカー `ao_upload_verified.json` を置く。過去 step は上書き・削除しない。
 

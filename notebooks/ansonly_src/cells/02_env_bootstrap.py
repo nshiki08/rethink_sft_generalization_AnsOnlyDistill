@@ -51,6 +51,17 @@ GPU_PROFILES = {
 }
 ALLOW_BLACKWELL_TORCH_DEVIATION = False   # G4 を使うときだけ True にする（公式 torch からの変更として記録される）
 
+# 論文の数学評価（evaluation/math_eval/math_eval_budget.py, vLLM）用の環境。セクション 9 で必要になったときに作る（学習用の公式環境とは別）。
+# vLLM 0.8.5 は公式 requirements.txt の pin（torch==2.6.0 を要求）。依存が多いので学習用の環境には入れない。
+# 公式 requirements.txt と同じ版: 下記すべて（matplotlib と pandas は requirements.txt に無い。評価スクリプトが import するので追加）
+EVAL_PIP_PINNED = [
+    "vllm==0.8.5", "torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0", "xformers==0.0.29.post2", "triton==3.2.0",
+    "transformers==4.52.4", "tokenizers==0.21.4", "numpy==1.26.4", "datasets==4.0.0", "pyarrow==21.0.0",
+    "math-verify==0.7.0", "latex2sympy2_extended==1.10.1", "sympy==1.13.1", "antlr4-python3-runtime==4.9.3", "word2number==1.1",
+    "regex==2025.7.34", "compressed-tensors==0.9.3", "xgrammar==0.1.18", "outlines==0.1.11", "huggingface_hub==0.34.4", "hf-xet==1.1.9",
+    "pandas==2.3.3", "matplotlib==3.10.3",
+]
+
 IN_COLAB = "google.colab" in sys.modules or os.path.exists("/content")
 WORK_DIR = os.environ.get("AO_WORK_DIR") or ("/content/ao_work" if IN_COLAB else os.path.abspath("./ao_work"))
 REPO_DIR = f"{WORK_DIR}/repo"
@@ -281,6 +292,9 @@ ENV_BOOTSTRAP = dict(
     fork_repo=FORK_REPO_URL, fork_ref=FORK_REF, fork_commit=FORK_COMMIT, upstream_repo=UPSTREAM_REPO_URL,
     upstream_reference_commit=UPSTREAM_REFERENCE_COMMIT, upstream_fetched=UPSTREAM_FETCHED,
     official_code_unchanged=OFFICIAL_CODE_UNCHANGED, official_diff_stat=OFFICIAL_DIFF_STAT,
+    # セクション 9 が評価用の環境を作るときに使う（uv は Colab のカーネルの Python に入っている）
+    uv_cmd=UV, uv_cache_dir=_uv_env["UV_CACHE_DIR"], uv_python_install_dir=_uv_env["UV_PYTHON_INSTALL_DIR"],
+    eval_env_dir=f"{WORK_DIR}/eval_env", eval_pip_pinned=EVAL_PIP_PINNED,
 )
 ENV_BOOTSTRAP_PATH = f"{RECORD_DIR}/env_bootstrap.json"
 json.dump(ENV_BOOTSTRAP, open(ENV_BOOTSTRAP_PATH, "w"), indent=2, ensure_ascii=False)

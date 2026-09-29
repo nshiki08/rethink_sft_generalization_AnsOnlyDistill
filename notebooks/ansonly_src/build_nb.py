@@ -26,7 +26,8 @@ SECTION_HEADERS = {
     "11_section7_baseline.py": "## 7. baseline の確認または実行",
     "12_section8_search.py": "## 8. LR / epoch 探索",
     "13_resume.py": "## 再開: Colab 切断後に HF の checkpoint から続ける\n\n切断後は **セル 0（認証）→ 1（環境構築）→ 設定セル → 2 → 3 → 4-a → 4-b → 6-a** を実行してから、`RESUME_RUN_ID` を設定してこのセルを実行する。",
-    "14_section9_dev_eval.py": "## 9. dev 評価と結果集計",
+    "14_section9_eval.py": "## 9. 評価（論文と同じ方法）\n\n9-a: 公式の `evaluation/math_eval/math_eval_budget.py` を無変更で実行する（MATH500 avg@3, AIME24 avg@10, temperature 0.6, 最大 32768 token）。"
+                           "論文と同じく各 step の推移を記録する。9-b: dev 評価（論文には無い。探索の候補を選ぶ場合だけ使う）。",
     "15_section10_final.py": "## 10. 最終モデルの変換・HF 保存・読み込み確認・Model Card",
 }
 

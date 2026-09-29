@@ -30,7 +30,11 @@ else:
         raise SystemExit(f"{FINAL_REPO}/{_sub} は既に存在する。上書きしない。HF_FINAL_MODEL_REPO_ID を変える")
 
     _evals = globals().get("DEV_EVAL_RESULTS", [])
-    _eval_md = "\n".join(f"| {e['name']} | {e['dev_source']} ({e['dev_split']}) | {e['n']} | {e['accuracy']:.4f} | {e['scorer']} |" for e in _evals) or "| (未実施) | - | - | - | - |"
+    _paper_evals = [r for r in globals().get("PAPER_EVAL_RESULTS", []) if r.get("run_id") == _final_rid]
+    _pe_md = "\n".join(f"| {r['step']} | " + " | ".join(f"{r['results'][d][f'avg@{PAPER_EVAL_K[d]}']:.1f} ({'' if r['results'][d].get('paper_reference') is None else r['results'][d]['paper_reference']})"
+                                                         for d in PAPER_EVAL_DATASETS) + f" | {r['results'][PAPER_EVAL_DATASETS[0]]['avg_length_tokens']:.0f} |"
+                        for r in sorted(_paper_evals, key=lambda r: r["step"])) or "| (未実施) |" + " - |" * (len(PAPER_EVAL_DATASETS) + 1)
+    _eval_md = "\n".join(f"| {e['name']} | {e['dev_source']} ({e['dev_split']}) | {e['rows']} | avg@{e['n']} {e['avg_at_n']:.2f} | {e['scorer']} |" for e in _evals) or "| (未実施) | - | - | - | - |"
     _changes_md = "\n".join(f"| `{c['key']}` | `{c['official']}` | `{c['new']}` | {c['reason']} |" for c in _saved_spec["changes_vs_official"])
     _audit = AO_AUDIT_SUMMARY
     _tv = _saved_spec.get("training_view") or dict(enabled=False)
@@ -87,15 +91,23 @@ Answer-only (AO) 蒸留の学生モデル。公開 CoT 学生 `{_saved_spec['cot
 - 環境: {json.dumps(ENV_RECORD.get('gpus'))}, torch {PKG_VERSIONS.get('torch')}, transformers {PKG_VERSIONS.get('transformers')}, flash-attn {FLASH_ATTN_VERSION}, Colab={IN_COLAB}, GPU プロファイル {_saved_spec.get('gpu_profile', 'official')}{('（公式からの変更: ' + _saved_spec['gpu_profile_deviation'] + '）') if _saved_spec.get('gpu_profile_deviation') else ''}
 - 再開用 checkpoint（model/optimizer/extra/dataloader 状態）: `{HF_CKPT_REPO_ID}` の `runs/{_final_rid}/global_step_*`
 
-## 評価
-| model | dev | n | accuracy | scorer |
+## 評価（論文と同じ方法）
+公式 `evaluation/math_eval/math_eval_budget.py` を無変更で実行（vLLM 0.8.5, temperature 0.6, top_p 0.95, 最大 32768 token, math-verify）。
+MATH500 は avg@3、AIME24 は avg@10（%）。括弧内は同じ step の公開 CoT 学生の論文値（App. D）。論文との差: {'; '.join(PAPER_EVAL_DEVIATIONS)}。
+
+| step | {' | '.join(PAPER_EVAL_DATASETS)} | {PAPER_EVAL_DATASETS[0]} の平均出力長 (token) |
+| --- | {' | '.join('---' for _ in PAPER_EVAL_DATASETS)} | --- |
+{_pe_md}
+
+### dev 評価（論文には無い追加手順）
+| model | dev | 行数 | score | scorer |
 | --- | --- | --- | --- | --- |
 {_eval_md}
 
 loss の低下だけで能力向上は主張しない。上の表が「未実施」なら性能は未測定。
 
 ## 未実施・未確認
-- 上記以外のベンチマーク評価は未実施。最良設定の確定は独立 dev で候補を比較してから。
+- 論文の数学以外の評価（LiveCodeBench, GPQA-Diamond, MMLU-Pro, IFEval, AlpacaEval, HaluEval, TruthfulQA, HEx-PHI）は未実施（公式リポジトリにデータや判定モデルが同梱されていないものがある）。
 """
     with open(os.path.join(MERGED_DIR, "..", "README.md"), "w") as f:
         f.write(MODEL_CARD)
@@ -123,6 +135,6 @@ loss の低下だけで能力向上は主張しない。上の表が「未実施
     del _mdl; torch.cuda.empty_cache()
     FINAL_MODEL["generation_check"] = GEN_CHECK
     _own_results = [r for r in globals().get("TRAIN_RESULTS", {}).values() if r["run_id"] == _final_rid]
-    write_experiment_record(_saved_spec, _own_results, evaluations=[e for e in _evals if _final_rid in e["name"]] or _evals, final_model=FINAL_MODEL,
-                            unverified=(["dev 評価未実施"] if not _evals else []) + ["他ベンチマーク未評価"] +
+    write_experiment_record(_saved_spec, _own_results, evaluations=_paper_evals + [e for e in _evals if _final_rid in e["name"]], final_model=FINAL_MODEL,
+                            unverified=(["論文と同じ評価（MATH500/AIME24）未実施"] if not _paper_evals else []) + ["数学以外のベンチマーク未評価"] +
                                        (["このセッションの学習ログなし（HF の experiment_record を参照）"] if not _own_results else []))

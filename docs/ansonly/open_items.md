@@ -1,14 +1,14 @@
 # 未決定事項と未検証項目
 
-## 1. dev set（LR / epoch の選択に使う独立データ）: 未確定
+## 1. 探索結果の扱いと dev set: 未決定
 
-### 何のためのデータか
+**論文には dev が無い**（[paper_alignment.md](paper_alignment.md)）。論文は条件ごとに test ベンチマーク（MATH500, AIME24 など）の step ごとの推移を並べて比較し、1 つを選んでいない。
+ノートブックの既定も論文と同じ（セクション 9-a で全条件・全 step を評価して並べる。dev は使わない）。
 
-探索（lr × epoch）の候補から最良を選ぶためのデータ。次の 2 つと重ならないことが必要。
-- 学習データ（Math-CoT-20k。同じ問題の言い換え・翻訳も含む）: 重なると暗記を「良い設定」と誤認する
-- 最終評価のテストベンチマーク: テストで設定を選ぶと、テストの成績が選択の分だけ楽観的になる
+探索候補から 1 つを「最良」として選ぶ必要がある場合だけ、学習データとも test とも重ならない dev が要る（test で選ぶと、選んだ分だけ test の成績が楽観的になる）。
+その場合は 9-b（`DEV_EVAL_*`、既定は無効）を使う。生成と採点は 9-a と同じ条件（temperature 0.6, 最大 32768 token, math-verify, avg@n）。
 
-ノートブックでは `DEV_EVAL_*` で指定し、`DEV_EVAL_IS_INDEPENDENT=True` にするまで選択処理を行わない。
+決めること: 論文と同じく全条件を並べて報告するか、dev で 1 つ選ぶか（教授との合意事項）。選ぶ場合の dev の候補が以下。
 
 ### 候補（調査結果、2026-09-29）
 
@@ -23,7 +23,7 @@
 4. 記述式（math-word-problem）のみ、教師正答率 > 0（20k と同じ条件）、math-verify で参照正解が解析できるもの
 5. 残り 14,033 問から seed 20260929 で data_source の比率に合わせて 500 問（dev500）/ 1000 問（dev1000）
 
-評価: 学習と同じ prompt、greedy、`max_new_tokens=128`、`\boxed{}` を math-verify で参照正解と照合。正答率 30% 付近で標準誤差は 500 問で約 2.0 ポイント、1000 問で約 1.4 ポイント。
+評価: 9-a と同じ条件（公式評価スクリプトと同じ prompt、temperature 0.6、avg@3、math-verify）。正答率 30% 付近で標準誤差は 500 問で約 2.0 ポイント、1000 問で約 1.4 ポイント（1 サンプルあたり。avg@3 ではやや小さい）。
 
 ### 最終テストの選択に関わる事実（重複調査）
 
@@ -34,14 +34,15 @@
 | MATH500 | 実質的な重複 1 問（言い換え） |
 | AIME24, AIME25, AMC23 | 重複なし |
 
-### 決めること
+### 決めること（dev を使う場合）
 
 - dev の出所（上記プール案で良いか）と規模（500 / 1000）
-- 最終テストのベンチマーク（dev と重ならないもの）
+- 論文と同じ数学評価は MATH500 と AIME24。AIME 2022/2023 と OlympiadBench は学習データと重なるので使わない
 
 ## 2. 探索範囲: 未確定
 
-提案 `lr ∈ {1e-5, 2e-5, 5e-5, 1e-4}`, `epochs ∈ {1, 2, 4, 8}`（16 run）。教授との合意待ち（`SEARCH_GRID_CONFIRMED=None`）。
+提案は論文が Qwen3-14B で行った最適化条件（[paper_alignment.md](paper_alignment.md) の 3 節）: lr 5e-5 / 1 epoch、lr 1e-5 / 1・2 epoch、lr 5e-5 / 16 epoch（cosine・constant）、lr 1e-4 / 16 epoch（constant）。
+教授との合意待ち（`SEARCH_GRID_CONFIRMED=None`）。1.7B/4B ではこれらの条件の公開 CoT 学生が無い。
 
 ## 3. HF の容量
 
@@ -56,14 +57,24 @@
 HF の上限（[Storage limits](https://huggingface.co/docs/hub/storage-limits), 2026-09-29 取得）: PRO の非公開は 1 TB まで、超過は 1 TB あたり月 $18。公開は「最大 10 TB（best-effort）」。
 PRO の容量は論理サイズで数える（Xet の重複排除による課金は Enterprise のみ）。optimizer 状態は毎 step 全体が変わるので重複排除も効かない。
 
-| 転送方針 | 1.7B 1 run（640 step） | 1.7B 16 run | 4B 1 run | 4B 16 run |
-| --- | --- | --- | --- | --- |
-| 旧既定: 40 step ごと + 公開 CoT の step、すべて再開用 | 186 GB | 1.57 TB | 435 GB | 3.67 TB |
-| **現既定: 80 step ごとと最終 step を再開用、公開 CoT の残り（10, 20, 40）は重みのみ** | **93 GB** | **0.79 TB** | 217 GB | 1.84 TB |
-| 160 step ごとを再開用、残りは重みのみ | 55 GB | 0.54 TB | 129 GB | 1.26 TB |
+| 転送方針 | 1.7B baseline（640 step） | 4B baseline |
+| --- | --- | --- |
+| 旧既定: 40 step ごと + 論文の評価 step、すべて再開用 | 186 GB | 435 GB |
+| **現既定: 80 step ごとと最終 step を再開用、論文の評価 step の残り（10, 20, 40）は重みのみ** | **93 GB** | **217 GB** |
+| 160 step ごとを再開用、残りは重みのみ | 55 GB | 129 GB |
+
+現既定で、baseline と論文の 6 条件（[paper_alignment.md](paper_alignment.md) の 3 節）をすべて学習した場合:
+
+| 条件 | step 数 | 1.7B | 4B |
+| --- | --- | --- | --- |
+| baseline（8 epoch） | 640 | 93 GB | 217 GB |
+| 1 epoch × 2 条件 | 80 | 21 GB × 2 | 48 GB × 2 |
+| 2 epoch | 160 | 31 GB | 72 GB |
+| 16 epoch × 3 条件 | 1280 | 176 GB × 3 | 411 GB × 3 |
+| 合計 | | **約 0.69 TB** | **約 1.62 TB** |
 
 - 現既定では最初の 80 step の途中で切断すると再開できず、最初からやり直しになる（1.7B・A100 で 80 step は概算 1 時間前後: 1 step ≈ 8 × 1.72e9 × 256 × 1536 FLOP ≈ 5.4e15、実効 125 TFLOPS と仮定。試走で実測する）
-- 4B の探索 16 run は現既定でも 1 TB を超える。選択肢: `RESUME_CKPT_EVERY=160`、run 終了後に不要な optimizer 状態を HF から消す（ノートブックは自動削除しない。削除は利用者が決める。Git LFS/Xet のファイル削除まで行わないと容量は戻らない）、有料枠
+- 4B で全条件を学習すると現既定でも 1 TB を超える（16 epoch の 3 条件が大半）。選択肢: `RESUME_CKPT_EVERY=160`、run 終了後に不要な optimizer 状態を HF から消す（ノートブックは自動削除しない。削除は利用者が決める。Git LFS/Xet のファイル削除まで行わないと容量は戻らない）、有料枠
 - HF の Storage Buckets（上書き可能）は `huggingface_hub>=1.5` が必要で、公式 pin（0.34.4）と両立しない
 
 ## 4. 抽出で参照正解と一致しなかった 3 行（解決済み: 教師の原文を残す）
@@ -88,3 +99,5 @@ math-verify 0.7.0 が失敗する理由（`math_verify/grader.py`）:
 - 試走（学習・保存・HF 転送・終了・再開）、本学習、GPU メモリ、所要時間
 - `verl.model_merger` による変換と最終モデルの読み込み・生成
 - 重みのみの checkpoint の HF 転送と、そこからの変換
+- 論文と同じ評価（9-a）: 評価用環境（vLLM 0.8.5）の作成、生成、所要時間。CPU ではデータの読み込み、結果ファイルの読み取り、採点だけ確認した
+- 数学以外の論文の評価（GPQA-Diamond, IFEval などは未実装）

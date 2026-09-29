@@ -176,8 +176,38 @@ RESUME_RUN_ID = None              # 例 "Qwen3-1.7B_Math-AO-20k_lr5e-5_ep8_bs256
 RESUME_STEP = "latest"            # "latest"（最新の完了済み）または整数 step
 
 # =============================================================================
-# dev 評価（セクション 9）。dev は未確定なので既定は無効。学習データや最終 test で選ばない
+# 評価（セクション 9）: 論文と同じ評価（論文 v2 Sec. 2.2, App. B.4/B.5）
+#   公式スクリプト evaluation/math_eval/math_eval_budget.py を無変更で実行する（vLLM 0.8.5, temperature 0.6, top_p 0.95, 最大 32768 token,
+#   MATH500 は 3 サンプルの平均正答率 avg@3、AIME24 は avg@10、math-verify で採点）。論文の数学評価はこの 2 つだけ。
+#   学習用の公式環境とは別の Python 3.12 環境（vLLM 0.8.5 と公式 pin）を作って実行する。GPU は A100 など（vLLM 0.8.5 は G4 に非対応）
+#   論文との差: 論文は 2 GPU（tensor parallel 2）、ここは 1 GPU。数値の丸め程度の差（記録する）
 # =============================================================================
+PAPER_EVAL_ENABLED = False        # True で実行（学習が終わってから。GPU メモリの 85% を使う）
+PAPER_EVAL_DATASETS = ["MATH500", "AIME24"]
+PAPER_EVAL_AO_RUNS = None         # 評価する AO run の run_id のリスト。None → このセッションで学習した run
+PAPER_EVAL_AO_STEPS = "paper"     # "paper" → PAPER_EVAL_STEPS のうち HF にある step（論文と同じ報告方法: 各 step の推移）/ 整数のリスト
+PAPER_EVAL_BASE = False           # Base（step 0）も評価する。論文の値は PAPER_REFERENCE にある
+PAPER_EVAL_COT_STEPS = []         # 公開 CoT 学生のうち再評価する step（例 [640]）。CoT は出力が長く 1 step で数時間かかる。論文の値は PAPER_REFERENCE
+PAPER_EVAL_DELETE_MERGED = True   # 評価後に変換済みの AO 重みをローカルから消す（ディスク節約。HF の checkpoint は残る）
+
+# 論文の値（App. D Table 18〜24、数学のみ。MATH500 avg@3 / AIME24 avg@10、%）。比較の表示に使う。NoCoT は step 20 の報告なし
+PAPER_REFERENCE = {
+    "Qwen3-1.7B": {
+        "base": {"MATH500": 58.9, "AIME24": 5.7},
+        "Math-CoT": {10: (55.7, 4.3), 20: (53.5, 3.3), 40: (42.9, 1.7), 80: (49.6, 2.7), 160: (51.6, 4.0), 320: (56.5, 5.0), 480: (59.1, 3.7), 640: (56.2, 5.0)},
+        "Math-NoCoT": {10: (55.2, 3.0), 40: (58.9, 5.7), 80: (58.1, 4.7), 160: (58.0, 4.3), 320: (60.7, 4.0), 480: (61.3, 5.7), 640: (59.5, 5.7)},
+        "source": "Table 18, 19, 21",
+    },
+    "Qwen3-4B": {
+        "base": {"MATH500": 70.8, "AIME24": 11.0},
+        "Math-CoT": {10: (64.9, 9.0), 20: (62.9, 13.0), 40: (71.5, 15.3), 80: (77.1, 19.0), 160: (78.8, 22.3), 320: (86.3, 29.0), 480: (87.1, 27.3), 640: (86.2, 30.7)},
+        "Math-NoCoT": {10: (66.7, 7.7), 40: (73.2, 10.0), 80: (72.9, 9.7), 160: (74.3, 9.0), 320: (75.9, 11.3), 480: (74.5, 11.3), 640: (74.3, 11.7)},
+        "source": "Table 18, 22, 24",
+    },
+}
+
+# dev 評価（セクション 9-b）: 論文には dev は無い（ハイパラ・checkpoint の選択をしていない）。探索の候補を選ぶ場合だけ使う追加手順。
+#   生成と採点は 9-a と同じ（公式スクリプトと同じ prompt・sampling・math-verify）。既定は無効
 DEV_EVAL_ENABLED = False
 DEV_EVAL_IS_INDEPENDENT = False   # dev が学習データ (Math-CoT-20k / OpenR1 由来の同一問題) とも最終 test とも重ならないと確認したら True にする
 DEV_EVAL_SOURCE = None            # jsonl のパス、または HF dataset id（例 "org/name"）
@@ -186,10 +216,8 @@ DEV_EVAL_REVISION = None
 DEV_EVAL_QUESTION_KEY = "problem"
 DEV_EVAL_ANSWER_KEY = "answer"
 DEV_EVAL_MAX_ROWS = None
-DEV_EVAL_MAX_NEW_TOKENS = 512     # AO 学生は短い出力。CoT 学生や Base を評価するときは大きくする
-DEV_EVAL_BATCH_SIZE = 16
-DEV_EVAL_DO_SAMPLE = False        # 公式評価 (math_eval_budget.py) は temperature 0.6 / top_p 0.95 / n サンプル。dev 選択は greedy を既定にし差を記録する
-DEV_EVAL_TARGETS = []             # [{"name": "...", "path_or_repo": "...", "subfolder": None, "revision": None}, ...]
+DEV_EVAL_N = 3                    # サンプル数（MATH500 と同じ avg@3）
+DEV_EVAL_TARGETS = []             # [{"name": "...", "path": "<HF 形式のローカルディレクトリ>"}, ...]。空ならこのセッションの run の最終 step
 
 # =============================================================================
 # 最終モデル（セクション 10）

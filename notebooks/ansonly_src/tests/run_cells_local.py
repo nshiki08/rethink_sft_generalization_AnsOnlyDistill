@@ -52,6 +52,7 @@ def stub_env_bootstrap():
         upstream_repo="https://github.com/Nebularaid2000/rethink_sft_generalization",
         upstream_reference_commit="71a442ea8f0adc4a1df4529d3c43393ac6e504fd", upstream_fetched=True,
         official_code_unchanged=True, official_diff_stat="",
+        uv_cmd=["uv"], uv_cache_dir="", uv_python_install_dir="", eval_env_dir=os.path.join(TEST_WORK, "ao_work_local", "eval_env"), eval_pip_pinned=[],
     )
 
 

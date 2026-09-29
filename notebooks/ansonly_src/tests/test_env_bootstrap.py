@@ -78,6 +78,15 @@ for prof_name, prof in g["GPU_PROFILES"].items():
     lock = {l.split("==")[0]: l.split("==")[1].split()[0] for l in r.stdout.splitlines() if "==" in l and not l.startswith("#")}
     print(f"profile {prof_name}: resolves (torch {lock.get('torch')}, sympy {lock.get('sympy')}, numpy {lock.get('numpy')}, nvidia-nccl-cu12 {lock.get('nvidia-nccl-cu12')})")
 
+# ---- 論文の数学評価用の環境（vLLM 0.8.5）の依存解決（GPU 不要）
+req = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+req.write("\n".join(g["EVAL_PIP_PINNED"]) + "\n"); req.close()
+r = subprocess.run(g["UV"] + ["pip", "compile", "--quiet", "--python-version", "3.12", "--python-platform", "x86_64-manylinux_2_28", req.name],
+                   capture_output=True, text=True, env=g["_uv_env"])
+assert r.returncode == 0, f"eval env pins do not resolve\n{r.stderr[-2000:]}"
+lock = {l.split("==")[0]: l.split("==")[1].split()[0] for l in r.stdout.splitlines() if "==" in l and not l.startswith("#")}
+print(f"eval env: resolves (vllm {lock.get('vllm')}, torch {lock.get('torch')}, xformers {lock.get('xformers')}, numpy {lock.get('numpy')})")
+
 # ---- セル 1 の再実行: 前回の公式環境カーネルと、残った学習プロセス（模擬）を終了する
 fake = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)", "torch.distributed.run"], start_new_session=True)
 open(f"{g['WORK_DIR']}/ao-trainer.pgid", "w").write(str(fake.pid))

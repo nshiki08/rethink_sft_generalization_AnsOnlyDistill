@@ -1,7 +1,7 @@
 """CPU test of section 9 helpers (paper-protocol evaluation). vLLM generation itself needs a GPU and is not run here.
 
 Checks: the symlink to the official hard-coded data path, that the official script's dataset loaders/keys work on it,
-parsing of the official result file, the dev scorer (same as process_single_result_no_truncation), paper reference lookup.
+parsing of the official result file, paper reference lookup.
 Usage: python notebooks/ansonly_src/tests/test_eval_helpers.py   (Python with the official pins; creates /mnt/shared-storage-user/... link)
 """
 import os, sys, json, tempfile
@@ -44,14 +44,7 @@ with tempfile.TemporaryDirectory() as d:
     assert g["read_official_math_result"](d, "AIME24") is None
 print("result parsing OK")
 
-# 3. dev の採点は公式と同じ（gold を \boxed{} で包み、応答全体を parse して verify）
-ns = {}
-exec(compile(g["DEV_RUNNER_SRC"], "dev_runner", "exec"), ns)
-assert ns["score"]("4", ["so the answer is \\boxed{4}", "\\boxed{5}", "no box"]) == [True, False, False]
-assert ns["score"]("\\frac{1}{2}", ["\\boxed{0.5}"]) == [True]
-print("dev scorer OK")
-
-# 4. 論文の値
+# 3. 論文の値
 assert g["paper_reference"]("ao", 640, "MATH500", "default（Sec. 2.1, Tab. 3）") == 56.2 and g["paper_reference"]("ao", 640, "AIME24", "default（Sec. 2.1, Tab. 3）") == 5.0
 assert g["paper_reference"]("ao", 640, "MATH500", "Sec. 3.4 Setting 4") is None and g["paper_reference"]("ao", 640, "MATH500", None) is None   # 既定条件以外には並べない
 assert g["paper_reference"]("cot", 640, "MATH500") == 56.2

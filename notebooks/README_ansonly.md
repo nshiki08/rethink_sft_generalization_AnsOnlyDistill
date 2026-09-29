@@ -35,7 +35,6 @@
 | 試走 | `TRIAL_NUM_ROWS`, `TRIAL_EPOCHS`, `TRIAL_SAVE_FREQ`, `TRIAL_KILL_AFTER_STEP` | 512 行 / 4 epoch / 3 / 3 |
 | 再開 | `RESUME_RUN_ID`, `RESUME_STEP` | `None` / `"latest"` |
 | 論文と同じ評価 | `PAPER_EVAL_ENABLED`, `PAPER_EVAL_AO_STEPS`, `PAPER_EVAL_BASE`, `PAPER_EVAL_COT_STEPS` | 無効（学習後に有効にする） |
-| dev 評価（論文には無い） | `DEV_EVAL_ENABLED`, `DEV_EVAL_SOURCE` など | 無効 |
 
 ### 公式 CoT 学習（8 GPU）との条件合わせ
 
@@ -88,7 +87,7 @@ bf16 で残る差は、fp32 では一致する 2 つの計算どうしでも同�
 
 本学習は `RUN_MODE="train"`、`RUN_KIND="baseline"` で 7、`RUN_KIND="search"` かつ `SEARCH_RUN_LIST` を設定して 8。
 
-評価（セクション 9-a）は論文と同じ方法: 公式の `evaluation/math_eval/math_eval_budget.py` を無変更で実行する（MATH500 avg@3、AIME24 avg@10、temperature 0.6、最大 32768 token、math-verify）。
+評価（セクション 9）は論文と同じ方法: 公式の `evaluation/math_eval/math_eval_budget.py` を無変更で実行する（MATH500 avg@3、AIME24 avg@10、temperature 0.6、最大 32768 token、math-verify）。
 学習が終わってから `PAPER_EVAL_ENABLED=True` にする。初回は評価用の環境（Python 3.12 + vLLM 0.8.5）を作る。論文と同じく各 step（10〜640）の推移を評価し、同じ step の公開 CoT 学生の論文値を並べて表示する。
 G4 では vLLM 0.8.5 が動かないので、評価は A100 のランタイムで行う。論文との対応の一覧は `docs/ansonly/paper_alignment.md`。
 学習中は 1 セルが終了まで動き続け、監視スレッドが保存完了ごとに checkpoint を HF の

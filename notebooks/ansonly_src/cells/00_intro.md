@@ -26,7 +26,7 @@
 | 7 | baseline | 公式 CoT 設定（lr 5e-5, 8 epoch）の AO 学習 | 公式環境 | 必要 |
 | 8 | LR / epoch 探索 | 候補ごとに同じ Base から独立に学習 | 公式環境 | 必要 |
 | 再開 | 切断後の再開 | HF の再開可能な checkpoint 一覧 → 選択 → 検証 → `resume_path` で再開 | 公式環境 | 必要 |
-| 9 | 評価 | 論文と同じ評価（公式 `math_eval_budget.py`: MATH500 avg@3, AIME24 avg@10）を各 step で実行。dev 評価は論文に無い任意の手順 | 評価用環境（vLLM） | 必要 |
+| 9 | 評価 | 論文と同じ評価（公式 `math_eval_budget.py`: MATH500 avg@3, AIME24 avg@10）を各 step で実行（論文と同じく選択はしない） | 評価用環境（vLLM） | 必要 |
 | 10 | 最終モデル | `verl.model_merger` で HF 形式へ変換、HF 保存、読み込み・生成確認、Model Card | 公式環境 | 必要 |
 
 ## 2 つのカーネル

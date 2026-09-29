@@ -43,4 +43,5 @@
 - 入力 prompt（`message` 列）は公式と同一。末尾の「Please reason step by step...」も残す。
 - 学習データは公開 `jasonrqh/Math-CoT-20k`（revision 固定）の 20,480 行をそのまま使う。行の削除・分割はしない。
 - 論文と変えてよいのは AO の target とハイパラ探索だけ。それ以外の条件（学習・評価）は論文に揃え、揃えられないものは記録する（[paper_alignment.md](paper_alignment.md)）。
-- LR / epoch / scheduler の候補は同じ Base から独立に学習する。論文は dev で選択していない（各条件の推移を並べる）。候補を 1 つ選ぶ場合は学習データでも最終テストでもない独立 dev で行う（[open_items.md](open_items.md)）。
+- 論文に無い手順（dev 評価、最良条件の選択など）は行わない。
+- LR / epoch / scheduler の候補は同じ Base から独立に学習し、論文と同じく各条件の推移を並べて報告する。

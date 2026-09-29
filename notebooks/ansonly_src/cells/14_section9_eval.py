@@ -1,4 +1,4 @@
-# @title 9. 評価: 9-a 論文と同じ評価（公式 math_eval_budget.py を無変更で実行）/ 9-b 任意の dev 評価（論文には無い）
+# @title 9. 論文と同じ評価（公式 evaluation/math_eval/math_eval_budget.py を無変更で実行。各 step の推移を記録し、選択はしない）
 import json, os, sys, time, glob, shutil, subprocess, hashlib
 
 EVAL_ENV_DIR = ENV_BOOTSTRAP["eval_env_dir"]
@@ -226,7 +226,7 @@ def save_paper_eval_row(row):
 
 
 PAPER_EVAL_RESULTS = globals().get("PAPER_EVAL_RESULTS", [])
-print("=== 9-a 論文と同じ評価 ===")
+print("=== 論文と同じ評価 ===")
 print(f"  スクリプト: evaluation/math_eval/math_eval_budget.py（無変更）| データ: {PAPER_EVAL_DATASETS} | "
       f"MATH500 avg@3, AIME24 avg@10, temperature 0.6, top_p 0.95, 最大 32768 token, math-verify")
 print("  論文との差:", PAPER_EVAL_DEVIATIONS)
@@ -257,122 +257,3 @@ else:
         print(f"  {_r['name'][:60]:60s} {_r['step']:5d} " + " ".join(_cells))
     print("  （論文 CoT）は同じ step の公開 CoT 学生の論文値（App. D。Base の行は Base の論文値。論文の既定条件以外の AO run には並べない）。NoCoT は PAPER_REFERENCE")
     print("  結果は評価ごとに records/paper_eval_results.json と HF（runs/<run_id>/paper_eval/, paper_eval/）に保存した")
-
-
-# ---- 9-b 任意の dev 評価（論文には無い。探索候補を選ぶ場合だけ使う）--------------------------------------------
-# 生成と採点は 9-a と同じ: 公式スクリプトと同じ prompt（"\n Please reason step by step, ..."）、vLLM、temperature 0.6, top_p 0.95,
-# 最大 32768 token, seed 1234, stop = eos、math-verify（gold を \boxed{} で包み、応答全体を parse）
-DEV_RUNNER_SRC = r'''
-import json, sys
-
-
-def score(gold, responses):
-    """math_eval_budget.py の process_single_result_no_truncation と同じ採点"""
-    from math_verify import parse, verify
-    gold = str(gold)
-    gold_parsed = parse(gold) if "boxed" in gold else parse("\\boxed{{{}}}".format(gold))
-    flags = []
-    for r in responses:
-        try:
-            p = parse(r)
-        except Exception:
-            p = r
-        flags.append(bool(verify(gold_parsed, p)))
-    return flags
-
-
-def main(cfg_path):
-    from vllm import LLM, SamplingParams
-    from transformers import AutoTokenizer
-    cfg = json.load(open(cfg_path))
-    rows = [json.loads(l) for l in open(cfg["data"]) if l.strip()]
-    tok = AutoTokenizer.from_pretrained(cfg["model"], use_fast=True, trust_remote_code=True)
-    prompts = [tok.apply_chat_template([{"role": "user", "content": "{}\n Please reason step by step, and put your final answer within \\boxed{{}}.".format(r["question"])}],
-                                       add_generation_prompt=True, tokenize=False) for r in rows]
-    llm = LLM(cfg["model"], gpu_memory_utilization=0.85, tensor_parallel_size=1, trust_remote_code=True)
-    sp = SamplingParams(temperature=0.6, max_tokens=32768, n=cfg["n"], top_p=0.95, seed=1234)
-    sp.stop_token_ids = [tok.eos_token_id]
-    outs = llm.generate(prompts, sampling_params=sp, use_tqdm=True)
-    per = []
-    for r, o in zip(rows, outs):
-        resp = [x.text for x in o.outputs]
-        flags = score(r["answer"], resp)
-        per.append(dict(question=r["question"], gold=r["answer"], responses=resp, correct=flags, tokens=[len(x.token_ids) for x in o.outputs]))
-    avg = sum(sum(p["correct"]) / len(p["correct"]) for p in per) / max(1, len(per))
-    json.dump(dict(avg_at_n=100 * avg, n=cfg["n"], rows=len(per), per_sample=per), open(cfg["out"], "w"), ensure_ascii=False)
-    print("DEV_RESULT", json.dumps(dict(avg_at_n=100 * avg, n=cfg["n"], rows=len(per))))
-
-
-if __name__ == "__main__":
-    main(sys.argv[1])
-'''
-
-
-def load_dev_rows():
-    if not DEV_EVAL_SOURCE:
-        return None
-    if os.path.isfile(DEV_EVAL_SOURCE):
-        rows = [json.loads(l) for l in open(DEV_EVAL_SOURCE) if l.strip()]
-    else:
-        from datasets import load_dataset
-        rows = [dict(r) for r in load_dataset(DEV_EVAL_SOURCE, split=DEV_EVAL_SPLIT, revision=DEV_EVAL_REVISION)]
-    out = [dict(question=r[DEV_EVAL_QUESTION_KEY], answer=(r[DEV_EVAL_ANSWER_KEY][0] if isinstance(r[DEV_EVAL_ANSWER_KEY], list) else r[DEV_EVAL_ANSWER_KEY])) for r in rows]
-    return out[:DEV_EVAL_MAX_ROWS] if DEV_EVAL_MAX_ROWS else out
-
-
-def evaluate_dev_target(target, rows):
-    tag = target["name"].replace("/", "_")
-    d = f"{EVAL_DIR}/dev/{tag}"
-    os.makedirs(d, exist_ok=True)
-    data = f"{d}/dev.jsonl"
-    with open(data, "w") as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    runner = f"{EVAL_DIR}/dev_runner.py"
-    open(runner, "w").write(DEV_RUNNER_SRC)
-    cfg = dict(model=target["path"], data=data, n=DEV_EVAL_N, out=f"{d}/result.json")
-    json.dump(cfg, open(f"{d}/cfg.json", "w"))
-    env = eval_subprocess_env(VLLM_ATTENTION_BACKEND="XFORMERS", VLLM_WORKER_MULTIPROC_METHOD="spawn", CUDA_VISIBLE_DEVICES="0")
-    check_gpu_free_for_vllm()
-    t0 = time.time()
-    r = subprocess.run([EVAL_PY, runner, f"{d}/cfg.json"], capture_output=True, text=True, env=env)
-    open(f"{d}/log.txt", "w").write(r.stdout + r.stderr)
-    if r.returncode != 0:
-        print(r.stderr[-3000:])
-        raise RuntimeError(f"dev 評価に失敗: {target['name']}")
-    res = json.loads([l for l in r.stdout.splitlines() if l.startswith("DEV_RESULT ")][-1][len("DEV_RESULT "):])
-    res.update(name=target["name"], path=target["path"], dev_source=DEV_EVAL_SOURCE, dev_split=DEV_EVAL_SPLIT, dev_revision=DEV_EVAL_REVISION,
-               elapsed_sec=round(time.time() - t0), scorer="9-a と同じ生成条件・math-verify 採点（avg@n）")
-    print(f"  {target['name']}: avg@{res['n']} = {res['avg_at_n']:.2f} (rows {res['rows']}, {res['elapsed_sec']}s)")
-    return res
-
-
-DEV_EVAL_RESULTS = globals().get("DEV_EVAL_RESULTS", [])
-print("\n=== 9-b dev 評価（論文には無い追加手順）===")
-if not DEV_EVAL_ENABLED:
-    print("  DEV_EVAL_ENABLED=False。論文は dev を使わず、各条件を test ベンチマークの step ごとの推移で報告している（9-a と同じ）")
-else:
-    assert N_GPUS >= 1
-    assert DEV_EVAL_IS_INDEPENDENT, "DEV_EVAL_IS_INDEPENDENT=True を設定する前に、dev が学習データ・最終 test と独立であることを確認する"
-    assert DEV_EVAL_SOURCE, "DEV_EVAL_SOURCE（jsonl のパスか HF dataset id）を設定する"
-    assert all(isinstance(t, dict) and {"name", "path"} <= set(t) for t in DEV_EVAL_TARGETS), \
-        "DEV_EVAL_TARGETS の各要素は {'name': ..., 'path': <HF 形式のローカルディレクトリ>}"
-    _forbidden = {DATASET_REPO, DATASET_ORIGIN_POOL, os.path.abspath(AO_PARQUET), os.path.abspath(RAW_PARQUET)}
-    assert DEV_EVAL_SOURCE not in _forbidden and (not os.path.isfile(DEV_EVAL_SOURCE) or os.path.abspath(DEV_EVAL_SOURCE) not in _forbidden), \
-        "学習データ (Math-CoT-20k / OpenR1-Math-220k / AO parquet) を dev にしない"
-    ensure_eval_env()
-    DEV_ROWS = load_dev_rows()
-    print(f"  dev: {DEV_EVAL_SOURCE} split={DEV_EVAL_SPLIT} rows={len(DEV_ROWS)}")
-    _targets = list(DEV_EVAL_TARGETS)
-    if not _targets:
-        for _rid, _res in globals().get("TRAIN_RESULTS", {}).items():
-            if _res["exit_code"] == 0:
-                _st = _res["spec"]["total_steps"]
-                _targets.append(dict(name=f"{_rid}@step{_st}", path=merge_checkpoint(_rid, _st)))
-    for _t in _targets:
-        DEV_EVAL_RESULTS.append(evaluate_dev_target(_t, DEV_ROWS))
-    with open(f"{RECORD_DIR}/dev_eval_results.json", "w") as f:
-        json.dump(DEV_EVAL_RESULTS, f, indent=2, ensure_ascii=False)
-    print("  dev 集計（候補全体を評価し終えるまで『確定』としない）:")
-    for _r in sorted(DEV_EVAL_RESULTS, key=lambda x: -x["avg_at_n"]):
-        print(f"    {_r['avg_at_n']:.2f}  {_r['name']}")

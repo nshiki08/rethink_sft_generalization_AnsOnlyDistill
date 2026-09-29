@@ -29,7 +29,6 @@ else:
     if _existing:
         raise SystemExit(f"{FINAL_REPO}/{_sub} は既に存在する。上書きしない。HF_FINAL_MODEL_REPO_ID を変える")
 
-    _evals = globals().get("DEV_EVAL_RESULTS", [])
     _paper_evals = [r for r in globals().get("PAPER_EVAL_RESULTS", []) if r.get("run_id") == _final_rid]
     if not _paper_evals:   # 別のセッションで評価した場合は HF の runs/<run_id>/paper_eval/ から step ごとに最新の結果を読む
         _latest = {}
@@ -41,7 +40,6 @@ else:
     _pe_md = "\n".join(f"| {r['step']} | " + " | ".join(f"{r['results'][d][f'avg@{PAPER_EVAL_K[d]}']:.1f} ({'' if r['results'][d].get('paper_reference') is None else r['results'][d]['paper_reference']})"
                                                          for d in PAPER_EVAL_DATASETS) + f" | {r['results'][PAPER_EVAL_DATASETS[0]]['avg_length_tokens']:.0f} |"
                         for r in sorted(_paper_evals, key=lambda r: r["step"])) or "| (未実施) |" + " - |" * (len(PAPER_EVAL_DATASETS) + 1)
-    _eval_md = "\n".join(f"| {e['name']} | {e['dev_source']} ({e['dev_split']}) | {e['rows']} | avg@{e['n']} {e['avg_at_n']:.2f} | {e['scorer']} |" for e in _evals) or "| (未実施) | - | - | - | - |"
     _changes_md = "\n".join(f"| `{c['key']}` | `{c['official']}` | `{c['new']}` | {c['reason']} |" for c in _saved_spec["changes_vs_official"])
     _audit = AO_AUDIT_SUMMARY
     _tv = _saved_spec.get("training_view") or dict(enabled=False)
@@ -106,11 +104,6 @@ MATH500 は avg@3、AIME24 は avg@10（%）。括弧内は同じ step の公開
 | --- | {' | '.join('---' for _ in PAPER_EVAL_DATASETS)} | --- |
 {_pe_md}
 
-### dev 評価（論文には無い追加手順）
-| model | dev | 行数 | score | scorer |
-| --- | --- | --- | --- | --- |
-{_eval_md}
-
 loss の低下だけで能力向上は主張しない。上の表が「未実施」なら性能は未測定。
 
 ## 未実施・未確認
@@ -142,6 +135,6 @@ loss の低下だけで能力向上は主張しない。上の表が「未実施
     del _mdl; torch.cuda.empty_cache()
     FINAL_MODEL["generation_check"] = GEN_CHECK
     _own_results = [r for r in globals().get("TRAIN_RESULTS", {}).values() if r["run_id"] == _final_rid]
-    write_experiment_record(_saved_spec, _own_results, evaluations=_paper_evals + [e for e in _evals if _final_rid in e["name"]], final_model=FINAL_MODEL,
+    write_experiment_record(_saved_spec, _own_results, evaluations=_paper_evals, final_model=FINAL_MODEL,
                             unverified=(["論文と同じ評価（MATH500/AIME24）未実施"] if not _paper_evals else []) + ["数学以外のベンチマーク未評価"] +
                                        (["このセッションの学習ログなし（HF の experiment_record を参照）"] if not _own_results else []))

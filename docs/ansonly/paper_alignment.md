@@ -10,7 +10,7 @@
 - 結果は test ベンチマーク上の **step ごとの推移**（step 10〜640、16 epoch は 1280 まで。App. D）と、要約表の **最終 step**（Tab. 2 "We report the performance of the last checkpoint"）
 - 評価スクリプトに `humanoid_data_1k_fortest.jsonl`（1k の held-out らしきファイル）の設定があるが、どのスクリプトからも使われず、公開もされていない
 
-ノートブックの 9-b（dev 評価）は論文に無い追加手順で、既定は無効。探索候補を 1 つに選ぶ必要がある場合だけ使う。
+ノートブックも論文に無い手順は行わない（dev 評価や最良条件の選択は無い）。探索の各条件は論文と同じ評価で step ごとに並べて報告する。
 
 ## 2. 学習
 
@@ -43,11 +43,11 @@
 
 - 提案は `SEARCH_GRID_PROPOSED`（未確定）。確定は `SEARCH_GRID_CONFIRMED`
 - 1.7B/4B ではこれらの条件の公開 CoT 学生が無い。CoT との比較が同じ条件でできるのは baseline だけ
-- 探索の結果の扱い（論文と同じく全条件の推移を並べるか、dev で 1 つ選ぶか）は未決定（[open_items.md](open_items.md)）
+- 探索の結果は論文と同じく各条件の推移を並べて報告する（選択はしない）
 
 ## 4. 評価
 
-| 項目 | 論文 | ノートブック（セクション 9-a） | 差 |
+| 項目 | 論文 | ノートブック（セクション 9） | 差 |
 | --- | --- | --- | --- |
 | 数学ベンチマーク | MATH500, AIME24 のみ | 同じ | なし |
 | 実行コード | `evaluation/math_eval/math_eval_budget.py`（vLLM） | 同じスクリプトを無変更で実行（データの絶対パスはシンボリックリンクで解決） | なし |
@@ -60,4 +60,4 @@
 | 評価する step | 10, 20, 40, 80, 160, 320, 480, 640（16 epoch は 1280 まで） | 同じ（HF に送る step もこれに合わせた） | なし |
 | 数学以外 | LiveCodeBench v2, GPQA-Diamond, MMLU-Pro, IFEval, AlpacaEval, HaluEval, TruthfulQA, HEx-PHI | 未実装 | 公式リポジトリに MMLU-Pro / HaluEval / TruthfulQA / LiveCodeBench のデータが無く、判定モデルの場所も作者の環境に固定されている。GPQA-Diamond と IFEval はデータがあり追加可能 |
 
-論文の値（App. D Table 18〜24、1.7B/4B の Base・CoT・NoCoT の MATH500/AIME24）は設定セルの `PAPER_REFERENCE` にあり、9-a の表に同じ step の CoT の値を並べて表示する。
+論文の値（App. D Table 18〜24、1.7B/4B の Base・CoT・NoCoT の MATH500/AIME24）は設定セルの `PAPER_REFERENCE` にあり、セクション 9 の表に同じ step の CoT の値を並べて表示する。

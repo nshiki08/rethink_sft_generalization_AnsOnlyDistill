@@ -206,19 +206,6 @@ PAPER_REFERENCE = {
     },
 }
 
-# dev 評価（セクション 9-b）: 論文には dev は無い（ハイパラ・checkpoint の選択をしていない）。探索の候補を選ぶ場合だけ使う追加手順。
-#   生成と採点は 9-a と同じ（公式スクリプトと同じ prompt・sampling・math-verify）。既定は無効
-DEV_EVAL_ENABLED = False
-DEV_EVAL_IS_INDEPENDENT = False   # dev が学習データ (Math-CoT-20k / OpenR1 由来の同一問題) とも最終 test とも重ならないと確認したら True にする
-DEV_EVAL_SOURCE = None            # jsonl のパス、または HF dataset id（例 "org/name"）
-DEV_EVAL_SPLIT = "test"
-DEV_EVAL_REVISION = None
-DEV_EVAL_QUESTION_KEY = "problem"
-DEV_EVAL_ANSWER_KEY = "answer"
-DEV_EVAL_MAX_ROWS = None
-DEV_EVAL_N = 3                    # サンプル数（MATH500 と同じ avg@3）
-DEV_EVAL_TARGETS = []             # [{"name": "...", "path": "<HF 形式のローカルディレクトリ>"}, ...]。空ならこのセッションの run の最終 step
-
 # =============================================================================
 # 最終モデル（セクション 10）
 # =============================================================================

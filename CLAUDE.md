@@ -6,7 +6,7 @@ AO 学生 = 教師 Qwen3-32B の最終回答 `\boxed{...}` だけを target に�
 ## 必ず守る
 
 - `verl/` と `training_scripts/` は変更しない（monkey patch も不可）。学習はノートブックから公式 trainer `verl.trainer.fsdp_sft_trainer_ours` を subprocess で起動し、既存の hydra 引数だけで制御する。
-- 論文と変えてよいのは AO の target とハイパラ探索だけ。学習・評価のそれ以外の条件は論文に揃える（評価は公式 `evaluation/math_eval/math_eval_budget.py` を無変更で使う）。GPU 台数などで揃えられない場合は再現策を入れるか、差分として記録する。
+- 論文に無い手順（dev 評価、条件の選択など）は行わない。論文と変えてよいのは AO の target とハイパラ探索だけ。学習・評価のそれ以外の条件は論文に揃える（評価は公式 `evaluation/math_eval/math_eval_budget.py` を無変更で使う）。GPU 台数などで揃えられない場合は再現策を入れるか、差分として記録する。
 - push 先は Fork `nshiki08/rethink_sft_generalization_AnsOnlyDistill` のみ。オリジナル `Nebularaid2000/rethink_sft_generalization` には push しない。
 - データ本体・モデル重み・checkpoint・認証情報を commit しない。HF 上の checkpoint を自動削除・上書きしない。
 - LoRA / QLoRA は使わない。
@@ -35,4 +35,4 @@ Colab のカーネルは Python 3.13 で公式 pin が入らない。セル 1 �
 | [docs/ansonly/official_8gpu_emulation.md](docs/ansonly/official_8gpu_emulation.md) | 公式 8 GPU を 1 GPU で再現する方法（行の並べ替え + adv-only）、不採用案、残る差、検証結果 |
 | [docs/ansonly/environment.md](docs/ansonly/environment.md) | Colab の Python / GPU / 依存関係の扱い |
 | [docs/ansonly/pitfalls.md](docs/ansonly/pitfalls.md) | ハマりポイント |
-| [docs/ansonly/open_items.md](docs/ansonly/open_items.md) | 未決定事項（dev set、探索範囲、HF 容量）と未検証項目 |
+| [docs/ansonly/open_items.md](docs/ansonly/open_items.md) | 未決定事項（探索範囲、HF 容量）と未検証項目 |

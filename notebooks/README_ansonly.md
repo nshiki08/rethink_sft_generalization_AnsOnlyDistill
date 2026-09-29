@@ -10,7 +10,7 @@
 2. ランタイム → GPU。**A100 を推奨**（公式 `requirements.txt` の torch 2.6.0 がそのまま動く）。
    - G4（RTX PRO 6000 Blackwell, sm_120）は torch 2.6.0 が動かない。セル 1 で `ALLOW_BLACKWELL_TORCH_DEVIATION=True` にすると torch 2.7.1+cu128（torch の要求で sympy も 1.13.1 → 1.13.3）を使い、公式との差として記録する
    - T4 は flash-attn 2 が動かないので不可
-   - GPU メモリの推定: 1.7B 約 22 GiB、4B 約 41 GiB、8B 約 79 GiB（A100 80GB では不足、G4 96GB なら収まる見込み）
+   - GPU メモリの推定: 1.7B 約 20 GiB、4B 約 38 GiB、8B 約 76 GiB（A100 80GB で余裕約 2 GiB。試走で実測）、14B 約 138 GiB（Colab の単一 GPU では不可）。詳細は `docs/ansonly/environment.md` の 5 節
 3. Colab の「シークレット」に以下を登録し、ノートブックからのアクセスを許可する。
    - `HF_TOKEN`（write 権限。checkpoint と最終モデルの保存に使う）
    - `WANDB_API_KEY`（任意。無ければ公式と同じ offline mode）

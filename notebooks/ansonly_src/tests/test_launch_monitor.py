@@ -68,6 +68,15 @@ assert spec_c["upload_steps"] == [10, 20, 40, 80, 160, 240, 320, 400, 480, 560, 
 assert spec_c["upload_full_steps"] == [80, 160, 240, 320, 400, 480, 560, 640], spec_c["upload_full_steps"]   # 10/20/40 は重みのみ
 assert checkpoint_content_for(spec_c, 10) == "model_only" and checkpoint_content_for(spec_c, 80) == "full"
 assert checkpoint_content_for(dict(upload_steps=[10]), 10) == "full"   # 旧版の spec
+# 論文の最適化条件（16 epoch・constant）: scheduler の引数、run_id、評価 step（1280 まで）
+spec_k = build_run_spec("search", 1e-4, 16, data_path=AO_PARQUET, data_sha256=AO_SHA256, n_rows=20480, max_length=1536, save_freq=10, run_id=None, lr_scheduler="constant")
+assert spec_k["overrides"]["optim.lr_scheduler"] == "constant" and spec_k["run_id"].endswith("_ConstLR_search"), spec_k["run_id"]
+assert spec_k["paper_condition"] == "Sec. 3.4 Setting 4" and spec_k["total_steps"] == 1280
+assert [x for x in spec_k["upload_steps"] if x > 640] == [720, 800, 880, 960, 1040, 1120, 1200, 1280], spec_k["upload_steps"]
+assert any(c["key"] == "optim.lr_scheduler" for c in spec_k["changes_vs_official"])
+assert spec_c["overrides"]["optim.lr_scheduler"] == "cosine" and spec_c["paper_condition"].startswith("default")
+assert build_run_spec("search", 2e-5, 4, data_path=AO_PARQUET, data_sha256=AO_SHA256, n_rows=20480, max_length=1536, save_freq=10, run_id="y")["paper_condition"] is None
+assert normalize_run((5e-5, 16)) == (5e-5, 16, "cosine") and normalize_run((1e-4, 16, "constant")) == (1e-4, 16, "constant")
 assert spec["upload_full_steps"] == [3, 6]   # 試走は "all"
 require_training_env(1)
 FSDP2_GRAD_CHECK = dict(status="mismatch")

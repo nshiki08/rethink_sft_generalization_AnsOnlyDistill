@@ -103,12 +103,12 @@ def hf_usage_gb(n_full, n_model_only):
 
 
 print("\n=== 実効設定（1 GPU あたり micro batch、勾配蓄積） ===")
-for _lr, _ep, _kind in [(OFFICIAL_BASELINE["lr"], OFFICIAL_BASELINE["epochs"], "baseline")] + [(a, b, "search") for a, b in SEARCH_RUN_LIST]:
+for _lr, _ep, _kind in [(OFFICIAL_BASELINE["lr"], OFFICIAL_BASELINE["epochs"], "baseline")] + [normalize_run(r)[:2] + ("search",) for r in SEARCH_RUN_LIST]:
     _spe = steps_per_epoch(DATASET_EXPECTED_ROWS, OFFICIAL_TBS, max(N_GPUS, 1))
     _micro = MICRO_BATCH_OVERRIDE or OFFICIAL_MICRO_BSZ
     _total = int(math.ceil(_spe * _ep))
     _saves = sorted(set(list(range(SAVE_FREQ, _total + 1, SAVE_FREQ)) + [_total]))
-    _up = _saves if HF_UPLOAD_STEPS == "all" else [x for x in _saves if x in COT_PUBLIC_STEPS or x % RESUME_CKPT_EVERY == 0 or x == _total]
+    _up = _saves if HF_UPLOAD_STEPS == "all" else [x for x in _saves if x in PAPER_EVAL_STEPS or x % RESUME_CKPT_EVERY == 0 or x == _total]
     _nfull = len(_up) if (HF_UPLOAD_STEPS == "all" or HF_ANALYSIS_STEP_CONTENT == "full") else len([x for x in _up if x % RESUME_CKPT_EVERY == 0 or x == _total])
     print(f"  {_kind:8s} lr={fmt_lr(_lr)} ep={_ep}: steps/epoch={_spe} total={_total} warmup={int(_total * float(YAML_DEFAULTS.optim.warmup_steps_ratio))} "
           f"micro/gpu={_micro} accum={(OFFICIAL_TBS // max(N_GPUS, 1)) // _micro} HF uploads={len(_up)}（再開用 {_nfull} x {CKPT_SIZE_EST_GB:.1f} GB + "

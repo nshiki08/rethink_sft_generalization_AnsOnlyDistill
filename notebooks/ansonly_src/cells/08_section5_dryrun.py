@@ -3,18 +3,18 @@ import shutil, json, os
 
 
 def plan_runs():
-    """RUN_KIND に応じて実行予定の (lr, epochs) を返す"""
+    """RUN_KIND に応じて実行予定の (lr, epochs, scheduler) を返す"""
     if RUN_KIND == "baseline":
-        return [(OFFICIAL_BASELINE["lr"], OFFICIAL_BASELINE["epochs"])]
-    return list(SEARCH_RUN_LIST)
+        return [(OFFICIAL_BASELINE["lr"], OFFICIAL_BASELINE["epochs"], "cosine")]
+    return [normalize_run(r) for r in SEARCH_RUN_LIST]
 
 
 DRY_RUN_SPECS = []
 if not plan_runs():
     print("実行予定の候補が無い（RUN_KIND='search' なら SEARCH_RUN_LIST を設定する）")
-for _lr, _ep in plan_runs():
+for _lr, _ep, _sched in plan_runs():
     _spec = build_run_spec(RUN_KIND, _lr, _ep, data_path=AO_PARQUET, data_sha256=AO_SHA256, n_rows=DATASET_EXPECTED_ROWS,
-                           max_length=MAX_LENGTH, save_freq=SAVE_FREQ, n_gpus=max(N_GPUS, 1))
+                           max_length=MAX_LENGTH, save_freq=SAVE_FREQ, n_gpus=max(N_GPUS, 1), lr_scheduler=_sched)
     DRY_RUN_SPECS.append(_spec)
     print("=" * 100)
     print_run_spec(_spec)

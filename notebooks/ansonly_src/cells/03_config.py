@@ -82,10 +82,22 @@ AO_ACKNOWLEDGED_VERIFY_MISMATCH_ROWS = [12364, 16249, 16611]
 # =============================================================================
 OFFICIAL_BASELINE = {"lr": 5e-5, "epochs": 8, "status": "confirmed: 公開 CoT スクリプトの値"}
 
-# 探索対象は optim.lr と trainer.total_epochs。提案値と確定値を分ける。
-SEARCH_GRID_PROPOSED = {"lr": [1e-5, 2e-5, 5e-5, 1e-4], "epochs": [1, 2, 4, 8]}   # 提案（未確定）
-SEARCH_GRID_CONFIRMED = None      # 教授と合意後に {"lr": [...], "epochs": [...]} を入れる
-SEARCH_RUN_LIST = []              # このセッションで実行する候補 [(lr, epochs), ...]。空なら探索セルは何もしない
+# 論文が実施した最適化条件（論文 v2。いずれも Qwen3-14B-Base × Math-CoT-20k。1.7B/4B/8B は default のみで、公開 CoT 学生も default のみ）
+#   default: Sec. 2.1 / Tab. 3。短い学習・小さい LR: Sec. 3.1, App. C.1 Tab. 4。過学習の検証: Sec. 3.4 Setting 2〜4, App. C.7
+#   warmup は全条件で総 step の 10%（App. B.2。constant でも warmup あり）
+PAPER_OPTIMIZATION_CONDITIONS = [
+    dict(lr=5e-5, epochs=8, scheduler="cosine", paper="default（Sec. 2.1, Tab. 3）"),
+    dict(lr=5e-5, epochs=1, scheduler="cosine", paper="Tab. 4（短い学習）"),
+    dict(lr=1e-5, epochs=1, scheduler="cosine", paper="Tab. 4（小さい LR）"),
+    dict(lr=1e-5, epochs=2, scheduler="cosine", paper="Tab. 4（小さい LR）"),
+    dict(lr=5e-5, epochs=16, scheduler="cosine", paper="Sec. 3.4 Setting 2"),
+    dict(lr=5e-5, epochs=16, scheduler="constant", paper="Sec. 3.4 Setting 3"),
+    dict(lr=1e-4, epochs=16, scheduler="constant", paper="Sec. 3.4 Setting 4"),
+]
+# 探索対象は optim.lr, trainer.total_epochs, optim.lr_scheduler。提案は論文の条件（default 以外）。提案値と確定値を分ける。
+SEARCH_GRID_PROPOSED = [(c["lr"], c["epochs"], c["scheduler"]) for c in PAPER_OPTIMIZATION_CONDITIONS[1:]]   # 提案（未確定）
+SEARCH_GRID_CONFIRMED = None      # 教授と合意後に [(lr, epochs, scheduler), ...] を入れる
+SEARCH_RUN_LIST = []              # このセッションで実行する候補 [(lr, epochs) or (lr, epochs, scheduler), ...]。scheduler 省略時は "cosine"
 
 # 最大系列長: "auto_fit" = 全行が切り詰められずに収まる最小の長さ（MAX_LENGTH_ROUND_TO の倍数に切り上げ）
 #             "official" = 公式の 20000 / 整数 = 明示指定
@@ -118,16 +130,17 @@ REQUIRE_FSDP2_GRAD_CHECK = True  # セクション 2 の「1 GPU の FSDP2 勾�
 KEEP_OFFICIAL_ENV_VARS = True     # 公式スクリプトの export（CUDA_LAUNCH_BLOCKING=1 など）をそのまま使う。False なら CUDA_LAUNCH_BLOCKING を外し記録する
 
 SAVE_FREQ = 10                    # trainer.save_freq（正の整数。0 は使わない）。公式 CoT と同じ 10。保存は学習結果に影響しない
-# HF へ転送する step: "cot_public+resume" = 公開 CoT 学生と同じ step（10,20,40,80,160,320,480,640）と RESUME_CKPT_EVERY の倍数と最終 step。
+# HF へ転送する step: "cot_public+resume" = 論文が評価した step（PAPER_EVAL_STEPS）と RESUME_CKPT_EVERY の倍数と最終 step。
 #   それ以外の step の checkpoint は保存完了後にローカルから消す（HF に無いので再開候補にもならない）。"all" = 保存した全 step を転送
 # checkpoint 1 個（実測）: 1.7B = 10.34 GB（うち optimizer 状態 6.88 GB）, 4B = 24.15 GB（同 16.09 GB）。HF PRO の非公開枠は 1 TB
 #   HF_ANALYSIS_STEP_CONTENT="model_only": 再開用（RESUME_CKPT_EVERY の倍数と最終 step）以外の step は optimizer 状態を送らない
 #   （重み・extra・data.pt・huggingface/ は送る。分析・変換はできるが、その step からは再開できない）
 #   1.7B baseline 640 step の HF 使用量: RESUME_CKPT_EVERY=80 + model_only で約 93 GB（=40 + full で約 186 GB）
 HF_UPLOAD_STEPS = "cot_public+resume"
-COT_PUBLIC_STEPS = [10, 20, 40, 80, 160, 320, 480, 640]   # 公開 CoT 学生の HF repo にある stepNNN（2026-09-24 に確認）
+# 論文が評価・報告した step（App. D。16 epoch run は 1280 まで）。1.7B/4B の公開 CoT 学生の HF repo にあるのは 640 まで（2026-09-24 に確認）
+PAPER_EVAL_STEPS = [10, 20, 40, 80, 160, 320, 480, 640, 800, 960, 1120, 1280]
 RESUME_CKPT_EVERY = 80            # 再開用（optimizer 状態込み）に HF へ転送する間隔（step）。SAVE_FREQ の倍数。切断時は最大この step 数を再実行する
-HF_ANALYSIS_STEP_CONTENT = "model_only"   # "model_only" | "full"（公開 CoT と同じ step も optimizer 状態込みで送る）
+HF_ANALYSIS_STEP_CONTENT = "model_only"   # "model_only" | "full"（論文の評価 step も optimizer 状態込みで送る）
 SEED = None                       # None = 公式既定 (trainer.seed=1 は yaml 既定。trainer 内で明示的な乱数初期化はされていない)
 
 # =============================================================================
@@ -204,8 +217,8 @@ assert RUN_KIND in ("baseline", "search"), RUN_KIND
 assert isinstance(SAVE_FREQ, int) and SAVE_FREQ > 0, "trainer.save_freq は正の整数。0 は使わない"
 assert HF_UPLOAD_STEPS in ("all", "cot_public+resume"), HF_UPLOAD_STEPS
 assert HF_ANALYSIS_STEP_CONTENT in ("model_only", "full"), HF_ANALYSIS_STEP_CONTENT
-assert RESUME_CKPT_EVERY % SAVE_FREQ == 0 and all(s % SAVE_FREQ == 0 for s in COT_PUBLIC_STEPS) or HF_UPLOAD_STEPS == "all", \
-    "RESUME_CKPT_EVERY と COT_PUBLIC_STEPS は SAVE_FREQ の倍数にする（保存されない step は転送できない）"
+assert RESUME_CKPT_EVERY % SAVE_FREQ == 0 and all(s % SAVE_FREQ == 0 for s in PAPER_EVAL_STEPS) or HF_UPLOAD_STEPS == "all", \
+    "RESUME_CKPT_EVERY と PAPER_EVAL_STEPS は SAVE_FREQ の倍数にする（保存されない step は転送できない）"
 assert isinstance(TRIAL_SAVE_FREQ, int) and TRIAL_SAVE_FREQ > 0
 assert MAX_LENGTH_MODE in ("auto_fit", "official") or isinstance(MAX_LENGTH_MODE, int)
 assert AO_TARGET_STYLE in ("last_boxed_verbatim", "boxed_content", "last_boxed_line")

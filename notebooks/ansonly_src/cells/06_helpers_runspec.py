@@ -248,14 +248,30 @@ def official_micro_batches(file_source_rows, world, global_batch, micro):
     return [sorted(s) for s in steps]
 
 
-def make_run_id(kind, lr, epochs, tbs=None, suffix=""):
+def normalize_run(entry):
+    """SEARCH_RUN_LIST の要素 (lr, epochs) / (lr, epochs, scheduler) を (lr, epochs, scheduler) にそろえる"""
+    lr, ep, *rest = entry
+    sched = rest[0] if rest else "cosine"
+    assert sched in ("cosine", "constant"), f"lr_scheduler は論文で使われた cosine / constant のみ: {sched}"
+    return float(lr), int(ep), sched
+
+
+def paper_condition_of(lr, epochs, scheduler):
+    """論文の最適化条件（PAPER_OPTIMIZATION_CONDITIONS）に一致すれば、その出典を返す"""
+    for c in PAPER_OPTIMIZATION_CONDITIONS:
+        if abs(c["lr"] - float(lr)) < 1e-12 and c["epochs"] == int(epochs) and c["scheduler"] == scheduler:
+            return c["paper"]
+    return None
+
+
+def make_run_id(kind, lr, epochs, tbs=None, suffix="", scheduler="cosine"):
     tbs = tbs or OFFICIAL_TBS
-    base = f"{MODEL_KEY}_Math-AO-20k_lr{fmt_lr(lr)}_ep{epochs}_bs{tbs}"
+    base = f"{MODEL_KEY}_Math-AO-20k_lr{fmt_lr(lr)}_ep{epochs}_bs{tbs}" + ("_ConstLR" if scheduler == "constant" else "")   # 公式スクリプト名と同じ付け方
     return f"{base}_{kind}{suffix}"
 
 
 def build_run_spec(kind, lr, epochs, data_path, data_sha256, n_rows, max_length, save_freq, run_id=None, n_gpus=None,
-                   resume_from_path=None, total_training_steps=None, extra_note=None, upload_policy=None):
+                   resume_from_path=None, total_training_steps=None, extra_note=None, upload_policy=None, lr_scheduler="cosine"):
     """公式スクリプトの上書き引数を起点に、AO 学習に必要な最小限の引数だけ差し替える。差分は changes に記録する"""
     n_gpus = n_gpus or N_GPUS
     assert n_gpus >= 1, "GPU がない"
@@ -269,7 +285,8 @@ def build_run_spec(kind, lr, epochs, data_path, data_sha256, n_rows, max_length,
             changes.append(dict(key=k, official=old, new=v, reason=reason))
         ov[k] = v
 
-    run_id = run_id or make_run_id(kind, lr, epochs, suffix=RUN_ID_SUFFIX)
+    run_id = run_id or make_run_id(kind, lr, epochs, suffix=RUN_ID_SUFFIX, scheduler=lr_scheduler)
+    _paper_cond = paper_condition_of(lr, epochs, lr_scheduler)
     base_local = get_base_model_local()
     set_("model.partial_pretrain", base_local, f"同じ Base を revision {MODEL_INFO['base_revision'][:8]} で固定したローカルパス")
     train_path, train_sha, view = prepare_train_file(data_path, data_sha256, n_gpus)
@@ -286,8 +303,10 @@ def build_run_spec(kind, lr, epochs, data_path, data_sha256, n_rows, max_length,
                             reason=f"{n_gpus} GPU でも各 step の各 micro batch（4 行）を公式 {OFFICIAL_WORLD_SIZE} GPU と同じ行の組にする。"
                                    "各 step で使う 256 行の集合と epoch ごとの順序は公式と同じ。元の AO parquet は変更しない"))
     set_("data.max_length", max_length, "AO は短いので全行が収まる長さへ短縮（時間短縮。公式は 20000）" if max_length != OFFICIAL_MAX_LENGTH else "公式値")
-    set_("optim.lr", fmt_lr(lr), "探索対象" if float(lr) != OFFICIAL_LR else "公式値")
-    set_("trainer.total_epochs", epochs, "探索対象" if int(epochs) != OFFICIAL_EPOCHS else "公式値")
+    _why = f"探索対象（論文の条件: {_paper_cond}）" if _paper_cond else "探索対象（論文に無い条件）"
+    set_("optim.lr", fmt_lr(lr), _why if float(lr) != OFFICIAL_LR else "公式値")
+    set_("trainer.total_epochs", epochs, _why if int(epochs) != OFFICIAL_EPOCHS else "公式値")
+    set_("optim.lr_scheduler", lr_scheduler, _why if lr_scheduler != OFFICIAL["overrides"].get("optim.lr_scheduler", "cosine") else "公式値")
     set_("trainer.save_freq", save_freq, "checkpoint 周期（正整数）。保存は学習結果に影響しない" if int(save_freq) != hydra_value(OFFICIAL["overrides"]["trainer.save_freq"]) else "公式値")
     set_("trainer.checkpoint.save_contents", '["model","optimizer","extra"]', "再開に必要な状態一式を保存（公式 CoT は model のみ）")
     set_("trainer.checkpoint.load_contents", '["model","optimizer","extra"]', "再開時に一式を読む")
@@ -334,15 +353,16 @@ def build_run_spec(kind, lr, epochs, data_path, data_sha256, n_rows, max_length,
     if upload_policy == "all":
         _uploads = list(_saves)
         _full = list(_saves)
-    else:   # 公開 CoT 学生と同じ step + 再開用の間隔 + 最終 step
-        _uploads = sorted(s for s in _saves if s in COT_PUBLIC_STEPS or s % RESUME_CKPT_EVERY == 0 or s == total_steps)
+    else:   # 論文が評価した step + 再開用の間隔 + 最終 step
+        _uploads = sorted(s for s in _saves if s in PAPER_EVAL_STEPS or s % RESUME_CKPT_EVERY == 0 or s == total_steps)
         # 再開用（optimizer 状態込み）は RESUME_CKPT_EVERY の倍数と最終 step。それ以外（公開 CoT と同じ分析用 step）は model_only なら重みだけ送る
         _full = _uploads if HF_ANALYSIS_STEP_CONTENT == "full" else [s for s in _uploads if s % RESUME_CKPT_EVERY == 0 or s == total_steps]
     residual = residual_differences(n_gpus, max_length, view["enabled"])
     if n_gpus != OFFICIAL_WORLD_SIZE and not view["enabled"]:
         residual = [f"【再現無効】micro batch 構成と勾配の大きさ（{OFFICIAL_WORLD_SIZE / n_gpus:g} 倍）が公式 {OFFICIAL_WORLD_SIZE} GPU と異なる"] + residual
     spec = dict(
-        run_id=run_id, kind=kind, lr=float(lr), lr_str=fmt_lr(lr), epochs=epochs, model_key=MODEL_KEY, base_repo=MODEL_INFO["base_repo"],
+        run_id=run_id, kind=kind, lr=float(lr), lr_str=fmt_lr(lr), epochs=epochs, lr_scheduler=lr_scheduler, paper_condition=_paper_cond,
+        model_key=MODEL_KEY, base_repo=MODEL_INFO["base_repo"],
         base_revision=MODEL_INFO["base_revision"], base_local=base_local, cot_repo=MODEL_INFO["cot_repo"], cot_revision=MODEL_INFO["cot_revision"],
         cot_subfolder=MODEL_INFO["cot_subfolder"], teacher=TEACHER, data_path=data_path, data_sha256=data_sha256, n_rows=n_rows,
         dataset_repo=DATASET_REPO, dataset_revision=DATASET_REVISION, target_style=AO_TARGET_STYLE, max_length=int(max_length),
@@ -361,7 +381,8 @@ def build_run_spec(kind, lr, epochs, data_path, data_sha256, n_rows, max_length,
 
 
 def print_run_spec(spec):
-    print(f"run_id={spec['run_id']} kind={spec['kind']} lr={spec['lr_str']} epochs={spec['epochs']} n_gpus={spec['n_gpus']}")
+    print(f"run_id={spec['run_id']} kind={spec['kind']} lr={spec['lr_str']} epochs={spec['epochs']} lr_scheduler={spec.get('lr_scheduler', 'cosine')} n_gpus={spec['n_gpus']}"
+          f" | 論文の条件: {spec.get('paper_condition') or '該当なし（論文に無い条件）'}")
     print(f"  data={spec['data_path']} rows={spec['n_rows']} sha256={spec['data_sha256'][:12]} max_length={spec['max_length']} (official {spec['official_max_length']})")
     v = spec["training_view"]
     if v["enabled"]:

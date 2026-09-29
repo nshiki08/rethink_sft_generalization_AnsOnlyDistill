@@ -1,17 +1,18 @@
-# @title 8. LR / epoch 探索（各候補を同じ Base から独立に学習。8 epoch run の途中 checkpoint を短い epoch 設定の代用にしない）
+# @title 8. LR / epoch / scheduler 探索（提案は論文の最適化条件。各候補を同じ Base から独立に学習。8 epoch run の途中 checkpoint を短い epoch 設定の代用にしない）
 TRAIN_RESULTS = globals().get("TRAIN_RESULTS", {})
 SEARCH_SPECS = {}
 if RUN_MODE != "train" or RUN_KIND != "search":
     print("RUN_MODE='train' かつ RUN_KIND='search' のときだけ実行する（現在: %s / %s）" % (RUN_MODE, RUN_KIND))
     print("提案グリッド:", SEARCH_GRID_PROPOSED, "| 確定グリッド:", SEARCH_GRID_CONFIRMED, "| 実行リスト:", SEARCH_RUN_LIST)
 elif not SEARCH_RUN_LIST:
-    print("SEARCH_RUN_LIST が空。実行する (lr, epochs) を設定セルで指定する")
+    print("SEARCH_RUN_LIST が空。実行する (lr, epochs, scheduler) を設定セルで指定する")
 else:
-    _grid = SEARCH_GRID_CONFIRMED or SEARCH_GRID_PROPOSED
-    for _lr, _ep in SEARCH_RUN_LIST:
-        _tag = "confirmed" if (SEARCH_GRID_CONFIRMED and _lr in SEARCH_GRID_CONFIRMED["lr"] and _ep in SEARCH_GRID_CONFIRMED["epochs"]) else "proposed"
+    _confirmed = {normalize_run(c) for c in (SEARCH_GRID_CONFIRMED or [])}
+    for _lr, _ep, _sched in (normalize_run(r) for r in SEARCH_RUN_LIST):
+        _tag = "confirmed" if (_lr, _ep, _sched) in _confirmed else "proposed"
         _spec = build_run_spec("search", _lr, _ep, data_path=AO_PARQUET, data_sha256=AO_SHA256, n_rows=DATASET_EXPECTED_ROWS, max_length=MAX_LENGTH,
-                               save_freq=SAVE_FREQ, extra_note=f"探索候補 ({_tag} grid)。総 epoch {_ep} に応じて scheduler 期間 = {steps_per_epoch(DATASET_EXPECTED_ROWS, OFFICIAL_TBS, N_GPUS) * _ep} step")
+                               save_freq=SAVE_FREQ, lr_scheduler=_sched,
+                               extra_note=f"探索候補 ({_tag})。総 epoch {_ep} に応じて scheduler 期間 = {steps_per_epoch(DATASET_EXPECTED_ROWS, OFFICIAL_TBS, N_GPUS) * _ep} step")
         SEARCH_SPECS[_spec["run_id"]] = _spec
     for _rid, _spec in SEARCH_SPECS.items():
         print("=" * 100)

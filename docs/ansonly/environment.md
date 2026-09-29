@@ -80,12 +80,18 @@ CPU（gloo, world size 1）では差 0 を確認し、gloo が AVG を SUM と�
 
 | モデル | パラメータ数 | 推定ピーク | A100 80GB | G4 96GB |
 | --- | --- | --- | --- | --- |
-| Qwen3-1.7B-Base | 1,720,574,976 | 約 22 GiB | 収まる | 収まる |
-| Qwen3-4B-Base | 4,022,468,096 | 約 41 GiB | 収まる | 収まる |
-| Qwen3-8B-Base | 8,190,735,360 | 約 79 GiB | ほぼ確実に不足 | 収まる見込み（torch の変更を伴う） |
+| Qwen3-1.7B-Base | 1,720,574,976 | 約 20 GiB | 収まる | 収まる |
+| Qwen3-4B-Base | 4,022,468,096 | 約 38 GiB | 収まる | 収まる |
+| Qwen3-8B-Base | 8,190,735,360 | 約 76 GiB | 収まる見込み（余裕約 2 GiB、未検証） | 収まる見込み（torch の変更を伴う） |
+| Qwen3-14B-Base | 約 14.8e9 | 約 138 GiB（常駐分 110 GiB） | 不可 | 不可 |
 
-内訳: bf16 の重み・勾配・AdamW 2 状態 = 8 × パラメータ数、logits (4, 1536, 151936) bf16 の 3 コピー分 約 5.2 GiB、root group の reduce-scatter 一時領域、checkpointing した各層の入力。
-AdamW の状態は最初の `optimizer.step()` で作られるので、メモリ不足は 2 step 目以降に出る（試走は 8 step あるので検出できる）。実測は試走で行う。
+内訳: bf16 の重み・勾配・AdamW 2 状態 = 8 × パラメータ数（`fsdp_sft_trainer_ours.py:226-227, 329-331`）が常駐する。
+最大になる場面はサイズで異なる:
+- 8B・14B: 最初の `optimizer.step()`。AdamW の状態が作られ、foreach 実装（FSDP2 の DTensor は `torch/distributed/tensor/__init__.py:67-68` で foreach 対象に追加される）が `_foreach_sqrt` でパラメータ数 × 2 バイトの一時領域を作る（`torch/optim/adamw.py`）。合計 10 × パラメータ数。micro batch には依らない
+- 1.7B: 2 step 目の backward 開始時（logits (4, 1536, 151936) bf16 の 3 コピー分 約 5.2 GiB が加わる）
+
+1 step 目の optimizer.step と最初の保存（約 61 GiB）を通れば、8B でもそれ以上の場面は無い。実測は試走で行う。
+メモリを減らす hydra 引数は実質無い: CPU offload は使えない（設定セル `CPU_OFFLOAD_OVERRIDE` の注記）、`use_liger` は 1 GiB 未満、`use_remove_padding` は効果なし、sequence parallel は 2 GPU 以上が必要。
 
 ## 6. 未確認（Colab の GPU で確認する）
 

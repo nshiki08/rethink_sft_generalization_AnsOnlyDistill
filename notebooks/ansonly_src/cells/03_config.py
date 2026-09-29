@@ -14,8 +14,10 @@ RUN_ID_SUFFIX = ""            # 同名 run と衝突する場合に付ける識�
 # =============================================================================
 # 対象モデル（まず Qwen3 系列。サイズはここで選ぶ）
 #   1.7B: 小規模な動作確認候補 / 4B: 本実験候補（Colab で実行可能かは試走で実測する）
-#   GPU メモリの推定（公式 trainer のコードから算出。bf16 の重み・勾配・AdamW 2 状態 = 8 x パラメータ数 + logits 約 5.2 GiB など）:
-#   1.7B 約 22 GiB / 4B 約 41 GiB / 8B 約 79 GiB。メモリ不足は optimizer 状態が作られる 2 step 目から出る
+#   GPU メモリの推定（公式 trainer のコードから算出。bf16 の重み・勾配・AdamW 2 状態 = 8 x パラメータ数 が常駐。
+#   最初の optimizer.step() で AdamW の状態が作られ、foreach 実装の一時領域 2 x パラメータ数 が加わる）:
+#   1.7B 約 20 GiB / 4B 約 38 GiB / 8B 約 76 GiB（A100 80GB で余裕約 2 GiB）/ 14B 約 138 GiB（1 GPU では不可）
+#   8B・14B は最初の optimizer.step() が最大（micro batch を下げても減らない）。1.7B は 2 step 目の backward 開始時が最大
 # =============================================================================
 MODEL_KEY = "Qwen3-1.7B"
 
@@ -32,11 +34,11 @@ SUPPORTED_MODELS = {
     "Qwen3-8B": dict(status="supported",
                      base_repo="Qwen/Qwen3-8B-Base", base_revision="49e3418fbbbca6ecbdf9608b4d22e5a407081db4",
                      cot_repo="jasonrqh/Qwen3-8B_Math-CoT-20k_lr5e-5_ep8_bs256", cot_revision="522decd73c0b46f7029c2a315b3cc177c23a3498",
-                     cot_subfolder="step640", official_script="Qwen3-8B_Math-CoT-20k_lr5e-5_ep8_bs256.sh", note="推定ピーク約 79 GiB。A100 80GB ではほぼ確実にメモリ不足、G4 96GB なら収まる見込み（torch の版の変更を伴う）"),
+                     cot_subfolder="step640", official_script="Qwen3-8B_Math-CoT-20k_lr5e-5_ep8_bs256.sh", note="推定ピーク約 76 GiB（最初の optimizer.step）。A100 80GB で余裕約 2 GiB。試走で実測する"),
     "Qwen3-14B": dict(status="supported",
                       base_repo="Qwen/Qwen3-14B-Base", base_revision="0b0bd3732e2c374d483664439ea334928b65f304",
                       cot_repo="jasonrqh/Qwen3-14B_Math-CoT-20k_lr5e-5_ep8_bs256", cot_revision="e8e6542249d647ac82c556a93410a9c0cafd41cb",
-                      cot_subfolder="step640", official_script="Qwen3-14B_Math-CoT-20k_lr5e-5_ep8_bs256.sh", note="Colab 単一 GPU では full SFT が収まらない可能性が高い"),
+                      cot_subfolder="step640", official_script="Qwen3-14B_Math-CoT-20k_lr5e-5_ep8_bs256.sh", note="推定ピーク約 138 GiB（常駐分だけで 110 GiB）。Colab の単一 GPU（A100 80GB / G4 96GB）では学習できない。80GB を 2 台以上（8 台なら公式と同一）が必要"),
     # Qwen2.5 系列: 公式スクリプトは Qwen/Qwen2.5-{size}-no-sys-prompt を指定する（HF API は 401 = 非公開または存在しない）。
     # 公開 Base の chat template は system message が無いと "You are a helpful assistant." を自動挿入するため tokenization が公式と一致しない。
     # 関係・準備方法を確認するまで黙って置き換えない → blocked。
@@ -125,7 +127,8 @@ EMULATE_OFFICIAL_WORLD_SIZE = True
 MICRO_BATCH_OVERRIDE = None       # 公式の micro batch 4 を変えると (1) を再現できない。EMULATE_OFFICIAL_WORLD_SIZE=True では None 以外を禁止。
                                   # メモリ不足のときは、条件を保ったまま GPU を大きくするか 2/4 台にする。micro batch を変える場合は
                                   # EMULATE_OFFICIAL_WORLD_SIZE=False にし、公式との差として記録される（黙って変えない）
-CPU_OFFLOAD_OVERRIDE = None       # 使用不可: 公式 trainer は fsdp2 経路でも FSDP1 用の CPUOffload を渡すため FSDP2 に無視され offload されない（trainer:300-303, 337）
+CPU_OFFLOAD_OVERRIDE = None       # 使用不可。fsdp2: offload 指定でパラメータが CPU に移され（fsdp_utils.py:469-480）、FSDP1 用の CPUOffload が渡るため計算で落ちる見込み（trainer:300-303, 336）。
+                                  # fsdp（FSDP1）+ offload: この trainer は no_sync なしで 64 回 backward するので勾配が蓄積されない（torch の FSDP の制約）。どちらも使わない
 REQUIRE_FSDP2_GRAD_CHECK = True  # セクション 2 の「1 GPU の FSDP2 勾配確認」が OK でなければ学習を開始しない（world size 1 の NCCL AVG の既知の不具合報告への対策）
 KEEP_OFFICIAL_ENV_VARS = True     # 公式スクリプトの export（CUDA_LAUNCH_BLOCKING=1 など）をそのまま使う。False なら CUDA_LAUNCH_BLOCKING を外し記録する
 

@@ -242,10 +242,10 @@ else:
         # flash-attn: 公式 trainer は attn_implementation='flash_attention_2' 固定。依存（torch, einops）は導入済みなので --no-deps
         sh(UV + ["pip", "install", "--quiet", "--python", TRAIN_PY, "--no-deps", PROFILE["flash_attn_wheel"]], env=_uv_env)
     json.dump(dict(hash=_want_hash, want=_want, created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())), open(_marker, "w"), indent=2)
+    print(f"公式環境を作成した: {TRAIN_ENV_DIR}（{time.time() - t0:.0f} 秒）")
 TRAIN_ENV_FREEZE = f"{RECORD_DIR}/train_env_freeze.txt"   # 公式環境の全パッケージの版（記録）
 with open(TRAIN_ENV_FREEZE, "w") as f:
     f.write(sh(UV + ["pip", "freeze", "--python", TRAIN_PY], env=_uv_env) + "\n")
-    print(f"公式環境を作成した: {TRAIN_ENV_DIR}（{time.time() - t0:.0f} 秒）")
 
 # ---- 1.5 公式環境の確認（Python, torch, GPU アーキテクチャ, flash-attn, 公式 trainer の import） -------------------
 _TRAIN_ENV_VARS = {k: v for k, v in os.environ.items() if not k.startswith("UV_") and k not in ("PYTHONPATH", "PYTHONHOME", "MPLBACKEND", "VIRTUAL_ENV")}

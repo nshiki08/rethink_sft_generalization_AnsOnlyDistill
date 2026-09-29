@@ -1,12 +1,12 @@
 # Answer-only (AO) 蒸留ノートブックの使い方
 
-対象: `notebooks/ansonly_distillation.ipynb`（Google Colab 用）。
+対象: 学習ノートブック `notebooks/ansonly_distillation.ipynb` と評価ノートブック `notebooks/ansonly_eval.ipynb`（どちらも Google Colab 用）。
 公式実装 `verl.trainer.fsdp_sft_trainer_ours` と `training_scripts/` は変更せず、ノートブックから既存の引数を渡して AO 学生を学習する。
 
 ## 1. Colab で開く
 
 1. GitHub の Fork `nshiki08/rethink_sft_generalization_AnsOnlyDistill` で `notebooks/ansonly_distillation.ipynb` を開き、「Open in Colab」または
-   `https://colab.research.google.com/github/nshiki08/rethink_sft_generalization_AnsOnlyDistill/blob/<branch>/notebooks/ansonly_distillation.ipynb` を開く。
+   `https://colab.research.google.com/github/nshiki08/rethink_sft_generalization_AnsOnlyDistill/blob/main/notebooks/ansonly_distillation.ipynb` を開く（評価は同じ場所の `ansonly_eval.ipynb`）。
 2. ランタイム → GPU。**A100 を推奨**（公式 `requirements.txt` の torch 2.6.0 がそのまま動く）。
    - G4（RTX PRO 6000 Blackwell, sm_120）は torch 2.6.0 が動かない。セル 1 で `ALLOW_BLACKWELL_TORCH_DEVIATION=True` にすると torch 2.7.1+cu128（torch の要求で sympy も 1.13.1 → 1.13.3）を使い、公式との差として記録する
    - T4 は flash-attn 2 が動かないので不可
@@ -34,7 +34,7 @@
 | HF 保存先 | `HF_CKPT_REPO_ID` / `HF_FINAL_MODEL_REPO_ID` | `None` → HF の whoami から決める |
 | 試走 | `TRIAL_NUM_ROWS`, `TRIAL_EPOCHS`, `TRIAL_SAVE_FREQ`, `TRIAL_KILL_AFTER_STEP` | 512 行 / 4 epoch / 3 / 3 |
 | 再開 | `RESUME_RUN_ID`, `RESUME_STEP` | `None` / `"latest"` |
-| 論文と同じ評価 | `PAPER_EVAL_ENABLED`, `PAPER_EVAL_AO_STEPS`, `PAPER_EVAL_BASE`, `PAPER_EVAL_COT_STEPS` | 無効（学習後に有効にする） |
+| 評価（評価ノートブック） | `PAPER_EVAL_AO_RUNS`, `PAPER_EVAL_AO_STEPS`, `PAPER_EVAL_BASE`, `PAPER_EVAL_COT_STEPS` | None（HF にある `MODEL_KEY` の本学習 run すべて）/ 論文の評価 step / Base と CoT は論文の値を使う |
 
 ### 公式 CoT 学習（8 GPU）との条件合わせ
 
@@ -87,13 +87,23 @@ bf16 で残る差は、fp32 では一致する 2 つの計算どうしでも同�
 
 本学習は `RUN_MODE="train"`、`RUN_KIND="baseline"` で 7、`RUN_KIND="search"` かつ `SEARCH_RUN_LIST` を設定して 8。
 
-評価（セクション 9）は論文と同じ方法: 公式の `evaluation/math_eval/math_eval_budget.py` を無変更で実行する（MATH500 avg@3、AIME24 avg@10、temperature 0.6、最大 32768 token、math-verify）。
-学習が終わってから `PAPER_EVAL_ENABLED=True` にする。初回は評価用の環境（Python 3.12 + vLLM 0.8.5）を作る。論文と同じく各 step（10〜640）の推移を評価し、同じ step の公開 CoT 学生の論文値を並べて表示する。
-G4 では vLLM 0.8.5 が動かないので、評価は A100 のランタイムで行う。論文との対応の一覧は `docs/ansonly/paper_alignment.md`。
 学習中は 1 セルが終了まで動き続け、監視スレッドが保存完了ごとに checkpoint を HF の
 `runs/<run_id>/global_step_<N>/` へ転送・検証し、完了マーカー `ao_upload_verified.json` を置く。過去 step は上書き・削除しない。
 
-## 4. 切断後の再開
+## 4. 評価（別ノートブック `notebooks/ansonly_eval.ipynb`）
+
+論文と同じ方法で評価する: 公式の `evaluation/math_eval/math_eval_budget.py` を無変更で実行する（MATH500 avg@3、AIME24 avg@10、temperature 0.6、top_p 0.95、最大 32768 token、math-verify）。
+学習とは別のセッションで実行してよい。HF の checkpoint を step ごとに取得・変換して評価する。
+
+1. A100 のランタイムで開く（vLLM 0.8.5 は G4 に非対応）。シークレットは学習と同じ `HF_TOKEN`
+2. セル 0 → 1 → 設定（`MODEL_KEY` を学習と同じにする）→ 以降を順に実行
+3. `PAPER_EVAL_AO_RUNS=None` なら HF にある `MODEL_KEY` の本学習 run（`trial-` 以外）をすべて評価する。step は論文が評価した step のうち HF にあるもの（10〜640）
+4. 公開 CoT 学生と Base は論文の値（App. D）を表に並べる。論文との差は tensor parallel 1（論文は 2 GPU）だけ
+5. 結果は評価ごとに HF の `runs/<run_id>/paper_eval/` に保存する（再実行しても既存の結果は消さない）
+
+学習ノートブックの最終モデルのセル（セクション 9）は、この結果が HF にあれば Model Card に載せる。
+
+## 5. 切断後の再開
 
 1. 新しいランタイム（保存時と同じ種類の GPU）でセル 0 → 1 → 設定 → 2 → 3 → 4-a → 4-b → 6-a を実行する（同じ Fork commit・同じデータ・同じ Base revision が復元される）。
 2. 設定セルで `RUN_MODE="train"`、`RESUME_RUN_ID="<run_id>"`（`RESUME_STEP` は `"latest"` か整数）を設定する。
@@ -102,14 +112,14 @@ G4 では vLLM 0.8.5 が動かないので、評価は A100 のランタイム�
    `trainer.resume_mode=resume_path trainer.resume_from_path=...` で再開する。総 epoch 数・総 step 数は保存時の値を維持する。
    最後の保存以降の step は再実行になる。
 
-## 5. 成果物
+## 6. 成果物
 
 - ローカル: `/content/ao_work/{data,models,ckpt,log,records,merged}`（Colab のディスク。切断で消える）
 - HF checkpoint repo: `runs/<run_id>/global_step_<N>/`（model/optimizer/extra の shard, `data.pt`, `huggingface/`, `ao_ckpt_manifest.json`, `ao_upload_verified.json`。重みだけの step は optimizer の shard なし）と `runs/<run_id>/experiment_record_*.json`
 - HF の使用量（実測サイズから計算）: 1.7B は再開用 1 個 10.34 GB・重みのみ 3.46 GB で baseline 1 run 約 93 GB、4B は 24.15 GB・8.06 GB で約 217 GB。HF PRO の非公開枠は 1 TB（超過分は 1 TB あたり月 $18）
 - HF 最終モデル repo: `step<N>/`（`verl.model_merger` で変換した HF 形式）と `README.md`（Model Card）
 
-## 6. 未検証の項目
+## 7. 未検証の項目
 
 このノートブックは GPU の無い環境で検証した（構文、データ抽出・監査の全行実行、tokenizer での長さ計算、公式 dataset クラスによる全行の loss mask 検証、
 公式 trainer の import、ドライラン、および公式 trainer の代わりに保存形式だけを模した偽プロセスを使った 起動・監視・一時停止/終了・再開・manifest・記録 の処理）。

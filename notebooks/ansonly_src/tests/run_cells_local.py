@@ -1,6 +1,7 @@
 """Execute notebook cells locally (CPU, no HF token) in order with minimal stubs, to validate the non-GPU path.
 
-Usage: python notebooks/ansonly_src/tests/run_cells_local.py [up_to_cell_prefix]
+Usage: python notebooks/ansonly_src/tests/run_cells_local.py [up_to_cell_prefix]        # 学習ノートブックのセル
+       python notebooks/ansonly_src/tests/run_cells_local.py --eval                    # 評価ノートブックのセル（build_nb.EVAL_CELLS の順）
 Work dir: $AO_TEST_WORK_DIR (default ~/.cache/ao_nb_test). Data and the tokenizer are downloaded there; nothing is written to the repo.
 Run it with a Python that has the official pins installed (CPU torch is fine); that interpreter plays the "official env kernel".
 Cells executed: 01_auth, (02 env bootstrap replaced by a stub ENV_BOOTSTRAP for this interpreter), 03_config, 04 .. 15 (skip branches).
@@ -15,10 +16,16 @@ TEST_WORK = os.path.expanduser(os.environ.get("AO_TEST_WORK_DIR", "~/.cache/ao_n
 os.makedirs(TEST_WORK, exist_ok=True)
 os.chdir(TEST_WORK)
 sys.path.insert(0, REPO)
-up_to = sys.argv[1] if len(sys.argv) > 1 else "99"
+EVAL_MODE = "--eval" in sys.argv
+_args = [a for a in sys.argv[1:] if a != "--eval"]
+up_to = _args[0] if _args else "99"
 
 g = globals()   # cells run in the real __main__ so multiprocessing (fork) can resolve cell-defined functions
 cells = sorted(glob.glob(os.path.join(SRC, "cells", "*.py")))
+if EVAL_MODE:
+    sys.path.insert(0, SRC)
+    from build_nb import EVAL_CELLS
+    cells = [os.path.join(SRC, "cells", n) if n.endswith(".py") else n for n in EVAL_CELLS]
 
 
 def stub_model_dir():
@@ -66,6 +73,9 @@ def run(path):
 
 
 for path in cells:
+    if path == "<NOTEBOOK_KIND=eval>":
+        g["NOTEBOOK_KIND"] = "eval"
+        continue
     name = os.path.basename(path)
     if name[:2] > up_to:
         break
@@ -77,4 +87,11 @@ for path in cells:
     if name.startswith("06_"):
         g["get_base_model_local"] = stub_model_dir
 
+if EVAL_MODE:
+    for _k in ("sha256_of", "list_hf_checkpoints", "download_hf_checkpoint", "merge_checkpoint", "paper_eval_targets", "hf_model_runs", "evaluate_paper_target"):
+        assert callable(g.get(_k)), f"評価ノートブックで {_k} が定義されていない"
+    assert g["FSDP2_GRAD_CHECK"]["status"].startswith("skipped"), g["FSDP2_GRAD_CHECK"]
+    assert "AO_PARQUET" not in g and "MAX_LENGTH" not in g, "評価ノートブックがデータ準備のセルに依存している"
+    print("\nEVAL NOTEBOOK LOCAL RUN FINISHED.")
+    sys.exit(0)
 print("\nLOCAL RUN FINISHED.", {k: g.get(k) for k in ("AO_DATA_READY", "MASK_CHECK_OK", "MAX_LENGTH", "AUTO_FIT_MAX_LENGTH", "VIEW_CHECK_OK")})

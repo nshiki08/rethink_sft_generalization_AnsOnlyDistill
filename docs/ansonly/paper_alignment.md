@@ -48,7 +48,7 @@
 
 ## 4. 評価
 
-| 項目 | 論文 | ノートブック（セクション 9） | 差 |
+| 項目 | 論文 | 評価ノートブック（`notebooks/ansonly_eval.ipynb`） | 差 |
 | --- | --- | --- | --- |
 | 数学ベンチマーク | MATH500, AIME24 のみ | 同じ | なし |
 | 実行コード | `evaluation/math_eval/math_eval_budget.py`（vLLM） | 同じスクリプトを無変更で実行（データの絶対パスはシンボリックリンクで解決） | なし |
@@ -61,4 +61,4 @@
 | 評価する step | 10, 20, 40, 80, 160, 320, 480, 640（16 epoch は 1280 まで） | 同じ（HF に送る step もこれに合わせた） | なし |
 | 数学以外 | LiveCodeBench v2, GPQA-Diamond, MMLU-Pro, IFEval, AlpacaEval, HaluEval, TruthfulQA, HEx-PHI（Sec. 2.2。分野外への汎化を測る） | 行わない | 研究目的（数学能力への CoT の寄与）の対象外 |
 
-論文の値（App. D Table 18〜32、1.7B/4B/8B/14B の Base・CoT・NoCoT の MATH500/AIME24）は設定セルの `PAPER_REFERENCE` にあり、セクション 9 の表に同じ step の CoT の値を並べて表示する。
+論文の値（App. D Table 18〜32、1.7B/4B/8B/14B の Base・CoT・NoCoT の MATH500/AIME24）は設定セルの `PAPER_REFERENCE` にあり、評価ノートブックの表に同じ step の CoT の値を並べて表示する。

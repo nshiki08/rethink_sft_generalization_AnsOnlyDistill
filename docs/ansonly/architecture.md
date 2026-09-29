@@ -4,12 +4,13 @@
 
 | パス | 内容 |
 | --- | --- |
-| `notebooks/ansonly_distillation.ipynb` | Colab で開くノートブック。**生成物**。直接編集しない |
+| `notebooks/ansonly_distillation.ipynb` | 学習ノートブック（Colab）。**生成物**。直接編集しない |
+| `notebooks/ansonly_eval.ipynb` | 評価ノートブック（Colab）。**生成物**。学習と同じセルのうち 0, 1, 設定, 2, 4-a, 6-a と評価セルでできている（`build_nb.py` の `EVAL_CELLS`） |
 | `notebooks/ansonly_src/cells/NN_*.py / .md` | ノートブックのソース。ファイル名順に 1 セルずつ並ぶ |
-| `notebooks/ansonly_src/build_nb.py` | ソースから `.ipynb` を生成する（構文チェック込み）。セクション見出しの markdown もここにある |
+| `notebooks/ansonly_src/build_nb.py` | ソースから 2 つの `.ipynb` を生成する（構文チェック込み）。セクション見出しの markdown と評価ノートブックのセル構成もここにある |
 | `notebooks/ansonly_src/tests/run_cells_local.py` | 公式 pin の入った Python でセル 0 と設定〜5 を順に実行する（セル 1 は stub）。データと tokenizer を `$AO_TEST_WORK_DIR`（既定 `~/.cache/ao_nb_test`）に取得する |
 | `notebooks/ansonly_src/tests/test_launch_monitor.py` | 偽 trainer（`tests/fake_trainer/`）で 起動・監視・中断・再開・manifest・アップロード方針 を検証する |
-| `notebooks/ansonly_src/tests/test_eval_helpers.py` | セクション 9 の CPU で確認できる部分（公式評価スクリプトのデータパスとローダー、結果ファイルの読み取り、論文値） |
+| `notebooks/ansonly_src/tests/test_eval_helpers.py` | 評価の CPU で確認できる部分（公式評価スクリプトのデータパスとローダー、結果ファイルの読み取り、論文値、評価する run の選び方） |
 | `notebooks/ansonly_src/tests/test_env_bootstrap.py` | Colab と同じ構成（Python 3.13 のカーネル → uv の Python 3.12 公式環境 → 公式環境カーネル）でセル 0〜5 を CPU で実行する |
 | `notebooks/README_ansonly.md` | 利用者向けの使い方 |
 | `docs/ansonly/*.md` | 開発者向けの背景・決定事項・ハマりポイント |
@@ -44,8 +45,8 @@ python notebooks/ansonly_src/tests/test_launch_monitor.py        # 4. 起動・�
 | 6-b | `10_section6_trial.py` | 試走: 学習 → 保存 → 一時停止 → HF 転送 → 終了 → HF から取得 → 再開 → 参照 run と比較 | — |
 | 7 / 8 | `11_*`, `12_*` | baseline / LR・epoch 探索 | — |
 | 再開 | `13_resume.py` | HF の checkpoint から再開 | — |
-| 9 | `14_section9_eval.py` | 論文と同じ評価。評価用の別環境（Python 3.12 + vLLM 0.8.5）を作り、公式 `math_eval_budget.py` を無変更で実行（データの絶対パスはシンボリックリンク） | `PAPER_EVAL_RESULTS` |
-| 10 | `15_section10_final.py` | 最終モデル変換・HF 保存・Model Card | `FINAL_MODEL` |
+| 評価（評価ノートブックのみ） | `14_section9_eval.py` | 論文と同じ評価。HF の checkpoint を取得・変換し、評価用の別環境（Python 3.12 + vLLM 0.8.5）で公式 `math_eval_budget.py` を無変更で実行（データの絶対パスはシンボリックリンク）。run_id 未指定なら HF にある `MODEL_KEY` の本学習 run を評価する | `PAPER_EVAL_RESULTS` |
+| 9 | `15_section10_final.py` | 最終モデル変換・HF 保存・Model Card | `FINAL_MODEL` |
 
 ## 3. 学習の起動の流れ
 

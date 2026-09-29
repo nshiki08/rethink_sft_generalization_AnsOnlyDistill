@@ -16,13 +16,14 @@ AO 学生 = 教師 Qwen3-32B の最終回答 `\boxed{...}` だけを target に�
 
 ## ノートブックの編集
 
-`notebooks/ansonly_distillation.ipynb` は生成物。ソースは `notebooks/ansonly_src/cells/` にある。
+`notebooks/ansonly_distillation.ipynb`（学習）と `notebooks/ansonly_eval.ipynb`（評価）は生成物。ソースは `notebooks/ansonly_src/cells/` にあり、評価ノートブックは同じセルの一部（`build_nb.py` の `EVAL_CELLS`）でできている。
 
 ```bash
-python notebooks/ansonly_src/build_nb.py                       # ipynb を再生成
+python notebooks/ansonly_src/build_nb.py                       # 2 つの ipynb を再生成
 python notebooks/ansonly_src/tests/run_cells_local.py 08        # CPU で設定〜セル 5 を実行（公式 pin の Python）
 python notebooks/ansonly_src/tests/test_launch_monitor.py       # 起動・監視・再開の検証
-python notebooks/ansonly_src/tests/test_eval_helpers.py         # 評価（セクション 9）の CPU で確認できる部分
+python notebooks/ansonly_src/tests/run_cells_local.py --eval    # 評価ノートブックのセルを CPU で実行（データ準備のセルに依存しないこと）
+python notebooks/ansonly_src/tests/test_eval_helpers.py         # 評価の CPU で確認できる部分
 ```
 
 Colab のカーネルは Python 3.13 で公式 pin が入らない。セル 1 が Python 3.12 の公式環境とその Jupyter カーネルを作り、設定セル以降（`%%ao`）はそこで動く。詳細は environment.md。

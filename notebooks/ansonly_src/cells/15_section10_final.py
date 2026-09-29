@@ -1,4 +1,4 @@
-# @title 10. 最終モデル: verl.model_merger で HF 形式へ変換 → HF 保存 → 読み込み・短い生成の確認 → Model Card
+# @title 9. 最終モデル: verl.model_merger で HF 形式へ変換 → HF 保存 → 読み込み・短い生成の確認 → Model Card
 import json, os, time, torch, glob
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -30,7 +30,7 @@ else:
         raise SystemExit(f"{FINAL_REPO}/{_sub} は既に存在する。上書きしない。HF_FINAL_MODEL_REPO_ID を変える")
 
     _paper_evals = [r for r in globals().get("PAPER_EVAL_RESULTS", []) if r.get("run_id") == _final_rid]
-    if not _paper_evals:   # 別のセッションで評価した場合は HF の runs/<run_id>/paper_eval/ から step ごとに最新の結果を読む
+    if not _paper_evals:   # 評価ノートブックで評価した結果は HF の runs/<run_id>/paper_eval/ から step ごとに最新の結果を読む
         _latest = {}
         for _f in sorted(f for f in HF_API.list_repo_files(HF_CKPT_REPO_ID, repo_type="model") if f.startswith(f"runs/{_final_rid}/paper_eval/")):
             _latest[_f.split("/")[-1].split("_")[0]] = _f   # step<N>_<時刻>.json → 時刻順で最後が最新

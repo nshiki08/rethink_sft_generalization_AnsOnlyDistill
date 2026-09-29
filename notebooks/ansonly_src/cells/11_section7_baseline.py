@@ -44,4 +44,4 @@ else:
     TRAIN_RESULTS[BASELINE_SPEC["run_id"]] = launch_training(BASELINE_SPEC)
     _r = TRAIN_RESULTS[BASELINE_SPEC["run_id"]]
     print("timing:", json.dumps({k: v for k, v in summarize_timing(_r).items() if k != "step_sec_all"}, default=str))
-    write_experiment_record(BASELINE_SPEC, [_r], unverified=["論文と同じ評価（セクション 9）未実施", "最終モデル未変換"])
+    write_experiment_record(BASELINE_SPEC, [_r], unverified=["論文と同じ評価（評価ノートブック）未実施", "最終モデル未変換"])

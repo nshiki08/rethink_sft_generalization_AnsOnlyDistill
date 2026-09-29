@@ -1,6 +1,16 @@
 # @title 2. 環境の記録・HF ログイン・1 GPU の FSDP2 勾配確認・研究条件
-import json, os, sys, platform, shutil, subprocess, time
+import json, os, sys, platform, shutil, subprocess, time, hashlib
 import huggingface_hub
+
+
+def sha256_of(path, chunk=1 << 22):
+    """ファイルの sha256（データの照合と HF の checkpoint の manifest 検証で使う。評価ノートブックでも使うのでここで定義する）"""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(chunk), b""):
+            h.update(b)
+    return h.hexdigest()
+
 
 # ---- 2.1 セル 1 の結果（公式環境・Fork の revision・GPU）を記録する ------------------------------------------
 FORK_REPO_URL, FORK_REF, FORK_COMMIT = ENV_BOOTSTRAP["fork_repo"], ENV_BOOTSTRAP["fork_ref"], ENV_BOOTSTRAP["fork_commit"]
@@ -110,7 +120,11 @@ def run_fsdp2_grad_check(nproc=1, extra_env=None, timeout=900):
 
 
 FSDP2_GRAD_CHECK = dict(status="skipped (GPU なし)")
-if N_GPUS >= 1:
+NOTEBOOK_KIND = globals().get("NOTEBOOK_KIND", "train")   # 評価ノートブックは "eval"（学習しないので勾配確認は不要）
+if NOTEBOOK_KIND == "eval":
+    FSDP2_GRAD_CHECK = dict(status="skipped (評価ノートブック)")
+    print("FSDP2 勾配確認: 評価ノートブックでは行わない（学習しない）")
+elif N_GPUS >= 1:
     # 公式スクリプトの export（セクション 5 で表示）と同じ環境変数で実行する（同期の違いで結果が変わる不具合を見逃さないため）
     FSDP2_GRAD_CHECK = run_fsdp2_grad_check(nproc=1, extra_env=dict(CUDA_LAUNCH_BLOCKING="1", TORCH_NCCL_AVOID_RECORD_STREAMS="1", NCCL_DEBUG="WARN"))
     if FSDP2_GRAD_CHECK["status"] == "ok":

@@ -40,7 +40,7 @@ Colab のカーネル（Python 3.13）
 - 公式に pin が無いので決めたもの: `pandas==2.3.3`（`requirements.txt` に無く `setup.py` は無指定。導入時期で 3.x に変わらないよう 2.x の最終版に固定）、`ipykernel==6.29.5`（公式環境カーネル用。学習には関与しない）
 - 間接的な依存: 公式 `requirements.txt` を制約（`uv pip install -c`）に使い、公式と同じ版にそろえる。`requirements.txt` の中で互いに矛盾する `protobuf==5.29.5`（opentelemetry-proto 1.26 は <5 を要求）と `typer==0.9.4`（fastapi-cli は >=0.15.1 を要求）だけ制約から外す。G4 プロファイルは torch 系・triton・sympy・nvidia-*・xformers・vllm も外す。実際に入った全パッケージの版は `records/train_env_freeze.txt` と `records/eval_env_freeze.txt`
 - 学習用の公式環境に入れないもの: vllm, sglang, xformers など学習に使わないもの
-- 論文の数学評価用の環境（セクション 9 で作る、`/content/ao_work/eval_env`）: Python 3.12 + vllm 0.8.5 + xformers 0.0.29.post2 + torch 2.6.0 など（`EVAL_PIP_PINNED`。すべて `requirements.txt` の版。matplotlib 3.10.3 と pandas 2.3.3 は公式スクリプトが import するので追加）。vLLM 0.8.5 は sm_70〜sm_90 のみなので G4 では作らない
+- 論文の数学評価用の環境（評価ノートブックの評価セルで作る、`/content/ao_work/eval_env`）: Python 3.12 + vllm 0.8.5 + xformers 0.0.29.post2 + torch 2.6.0 など（`EVAL_PIP_PINNED`。すべて `requirements.txt` の版。matplotlib 3.10.3 と pandas 2.3.3 は公式スクリプトが import するので追加）。vLLM 0.8.5 は sm_70〜sm_90 のみなので G4 では作らない
 
 ## 3. GPU ごとの対応
 

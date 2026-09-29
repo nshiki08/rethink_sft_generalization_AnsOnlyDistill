@@ -1,4 +1,4 @@
-# @title 9. 論文と同じ評価（公式 evaluation/math_eval/math_eval_budget.py を無変更で実行。各 step の推移を記録し、選択はしない）
+# @title 評価: 論文と同じ評価（公式 evaluation/math_eval/math_eval_budget.py を無変更で実行。各 step の推移を記録し、選択はしない）
 import json, os, sys, time, glob, shutil, subprocess, hashlib
 
 EVAL_ENV_DIR = ENV_BOOTSTRAP["eval_env_dir"]
@@ -11,10 +11,6 @@ OFFICIAL_EVAL_ROOT = "/mnt/shared-storage-user/renqihan/sft_generalization"
 PAPER_EVAL_DATASET_PATHS = {"MATH500": f"{OFFICIAL_EVAL_ROOT}/evaluation/data/math/MATH500",
                             "AIME24": f"{OFFICIAL_EVAL_ROOT}/evaluation/data/math/converted_aime_dataset"}
 PAPER_EVAL_OUTPUT_KEYS = {"MATH500": ("math500", 2000), "AIME24": ("aime", 5000)}   # (save_name, budget_list[-1])。結果ファイルの場所
-PAPER_EVAL_K = {"MATH500": 3, "AIME24": 10}                                         # DATASET_CONFIGS の test_n（論文 App. B.4 と同じ）
-PAPER_EVAL_DEVIATIONS = ["tensor_parallel_size 1（論文と公式スクリプトは 2 GPU で 2）と GPU の種類（論文は H200）。数値がわずかに変わると temperature 0.6 の"
-                         "サンプリング結果も変わるので、論文値とはサンプリングの揺らぎの範囲（AIME24 は 30 問なので数ポイント）で異なり得る。"
-                         "CoT 学生と厳密に比べるときは同じ環境で CoT も評価する（PAPER_EVAL_COT_STEPS）"]
 # ipykernel は MPLBACKEND を inline 用の値に設定する。評価用の環境には matplotlib_inline が無く、公式スクリプトの import matplotlib が失敗するので
 # subprocess には描画しない既定の Agg を渡す（評価の値には影響しない）
 EVAL_SUBPROCESS_ENV = {"MPLBACKEND": "Agg", "PYTHONUNBUFFERED": "1"}
@@ -149,15 +145,25 @@ def cot_public_step_dir(step):
     return f"{d}/step{step}"
 
 
+def hf_model_runs():
+    """HF の checkpoint repo にある、設定セルの MODEL_KEY の本学習 run（試走 trial- は除く）。評価ノートブックで run_id を指定しないときに使う"""
+    if HF_API is None or not HF_CKPT_REPO_ID or not hf_repo_exists(HF_CKPT_REPO_ID):
+        return []
+    runs = sorted({f.split("/")[1] for f in HF_API.list_repo_files(HF_CKPT_REPO_ID, repo_type="model") if f.startswith("runs/") and f.count("/") >= 2})
+    runs = [r for r in runs if r.startswith(f"{MODEL_KEY}_") and not r.startswith("trial-")]
+    print(f"  PAPER_EVAL_AO_RUNS 未指定: HF の {MODEL_KEY} の run を評価する: {runs}")
+    return runs
+
+
 def paper_eval_targets():
     targets = []
     if PAPER_EVAL_BASE:
         targets.append(dict(kind="base", name=f"{MODEL_KEY}-Base", step=0))
     for s in PAPER_EVAL_COT_STEPS:
         targets.append(dict(kind="cot", name=f"{MODEL_KEY}_Math-CoT(public)", step=int(s)))
-    runs = PAPER_EVAL_AO_RUNS or [rid for rid, r in globals().get("TRAIN_RESULTS", {}).items() if r["exit_code"] == 0]
+    runs = PAPER_EVAL_AO_RUNS or [rid for rid, r in globals().get("TRAIN_RESULTS", {}).items() if r["exit_code"] == 0] or hf_model_runs()
     if not runs:
-        print("  WARN: 評価する AO run が無い。このセッションで学習していない場合（切断後など）は PAPER_EVAL_AO_RUNS に run_id を指定する")
+        print(f"  WARN: 評価する AO run が無い（HF の {HF_CKPT_REPO_ID} に {MODEL_KEY} の run が無い）。PAPER_EVAL_AO_RUNS に run_id を指定する")
     for rid in runs:
         done = [c["step"] for c in list_hf_checkpoints(rid) if c["complete"]]   # 重みだけの step も評価できる
         steps = [s for s in PAPER_EVAL_STEPS if s in done] if PAPER_EVAL_AO_STEPS == "paper" else [int(s) for s in PAPER_EVAL_AO_STEPS]
@@ -231,9 +237,10 @@ print(f"  スクリプト: evaluation/math_eval/math_eval_budget.py（無変更�
       f"MATH500 avg@3, AIME24 avg@10, temperature 0.6, top_p 0.95, 最大 32768 token, math-verify")
 print("  論文との差:", PAPER_EVAL_DEVIATIONS)
 if not PAPER_EVAL_ENABLED:
-    print("  PAPER_EVAL_ENABLED=False のため実行しない（学習が終わってから True にする）")
+    print("  PAPER_EVAL_ENABLED=False のため実行しない")
+elif N_GPUS < 1:
+    print("  GPU が無いので実行しない（評価には A100 などの GPU ランタイムが必要）")
 else:
-    assert N_GPUS >= 1, "GPU が必要"
     _eval_env = ensure_eval_env()
     ensure_official_eval_paths()
     _targets = paper_eval_targets()

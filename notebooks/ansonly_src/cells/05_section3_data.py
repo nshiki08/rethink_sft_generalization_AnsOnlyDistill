@@ -9,13 +9,6 @@ from huggingface_hub import hf_hub_download
 from verl.utils.reward_score.math_verify_ours import last_boxed_only_string, compute_score as mv_compute_score
 
 
-def sha256_of(path, chunk=1 << 22):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for b in iter(lambda: f.read(chunk), b""):
-            h.update(b)
-    return h.hexdigest()
-
 
 # ---- 3.1 取得（revision 固定、sha256 照合） ----
 RAW_PARQUET = hf_hub_download(repo_id=DATASET_REPO, filename=DATASET_FILE, repo_type="dataset", revision=DATASET_REVISION,

@@ -147,9 +147,10 @@ def cot_public_step_dir(step):
 
 def hf_model_runs():
     """HF の checkpoint repo にある、設定セルの MODEL_KEY の本学習 run（試走 trial- は除く）。評価ノートブックで run_id を指定しないときに使う"""
-    if HF_API is None or not HF_CKPT_REPO_ID or not hf_repo_exists(HF_CKPT_REPO_ID):
+    repo_id = resolve_ckpt_repo_id()
+    if HF_API is None or not repo_id or not hf_repo_exists(repo_id):
         return []
-    runs = sorted({f.split("/")[1] for f in HF_API.list_repo_files(HF_CKPT_REPO_ID, repo_type="model") if f.startswith("runs/") and f.count("/") >= 2})
+    runs = sorted({f.split("/")[1] for f in HF_API.list_repo_files(repo_id, repo_type="model") if f.startswith("runs/") and f.count("/") >= 2})
     runs = [r for r in runs if r.startswith(f"{MODEL_KEY}_") and not r.startswith("trial-")]
     print(f"  PAPER_EVAL_AO_RUNS 未指定: HF の {MODEL_KEY} の run を評価する: {runs}")
     return runs
@@ -163,7 +164,7 @@ def paper_eval_targets():
         targets.append(dict(kind="cot", name=f"{MODEL_KEY}_Math-CoT(public)", step=int(s)))
     runs = PAPER_EVAL_AO_RUNS or [rid for rid, r in globals().get("TRAIN_RESULTS", {}).items() if r["exit_code"] == 0] or hf_model_runs()
     if not runs:
-        print(f"  WARN: 評価する AO run が無い（HF の {HF_CKPT_REPO_ID} に {MODEL_KEY} の run が無い）。PAPER_EVAL_AO_RUNS に run_id を指定する")
+        print(f"  WARN: 評価する AO run が無い（HF の {resolve_ckpt_repo_id()} に {MODEL_KEY} の run が無い）。PAPER_EVAL_AO_RUNS に run_id を指定する")
     for rid in runs:
         done = [c["step"] for c in list_hf_checkpoints(rid) if c["complete"]]   # 重みだけの step も評価できる
         steps = [s for s in PAPER_EVAL_STEPS if s in done] if PAPER_EVAL_AO_STEPS == "paper" else [int(s) for s in PAPER_EVAL_AO_STEPS]
@@ -221,13 +222,13 @@ def save_paper_eval_row(row):
     """評価ごとに保存する（切断で失わないよう HF にも時刻付きの新しいファイルで置く。上書きしない）"""
     with open(f"{RECORD_DIR}/paper_eval_results.json", "w") as f:
         json.dump(PAPER_EVAL_RESULTS, f, indent=2, ensure_ascii=False)
-    if HF_API is not None and HF_CKPT_REPO_ID:
+    if HF_API is not None and resolve_ckpt_repo_id():
         ts = time.strftime("%Y%m%d-%H%M%S")
         tag = f"{row['name']}_step{row['step']}".replace("/", "_")
         path_in_repo = f"runs/{row['run_id']}/paper_eval/step{row['step']}_{ts}.json" if row["kind"] == "ao" else f"paper_eval/{tag}_{ts}.json"
         local = f"{RECORD_DIR}/paper_eval_{tag}_{ts}.json"
         json.dump(row, open(local, "w"), indent=2, ensure_ascii=False)
-        HF_API.upload_file(path_or_fileobj=local, path_in_repo=path_in_repo, repo_id=HF_CKPT_REPO_ID, repo_type="model",
+        HF_API.upload_file(path_or_fileobj=local, path_in_repo=path_in_repo, repo_id=resolve_ckpt_repo_id(), repo_type="model",
                            commit_message=f"paper-protocol evaluation {tag}")
 
 

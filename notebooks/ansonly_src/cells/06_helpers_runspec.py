@@ -5,9 +5,18 @@ from omegaconf import OmegaConf
 from huggingface_hub import snapshot_download, HfApi
 
 HF_API = HfApi() if HF_LOGGED_IN else None
-if HF_CKPT_REPO_ID is None and HF_ACCOUNT_NAME:
-    HF_CKPT_REPO_ID = f"{HF_ACCOUNT_NAME}/rethink-sft-ao-checkpoints"   # HF の whoami から決める（GitHub 名からは推測しない）
-print("HF checkpoint repo:", HF_CKPT_REPO_ID, "(private=%s)" % HF_CKPT_PRIVATE, "| upload during training:", HF_UPLOAD_CHECKPOINTS)
+
+
+def resolve_ckpt_repo_id():
+    """checkpoint repo の ID を返す。設定セルの HF_CKPT_REPO_ID があればその値、None なら HF のアカウント名（whoami）から決める（GitHub 名からは推測しない）。
+    未ログインで決められないときは None。HF を使う処理は HF_CKPT_REPO_ID を直接読まず、使う直前にこの関数を呼ぶ
+    （以前はこのセルで HF_CKPT_REPO_ID を書き換えていたので、設定セルを実行し直すと None に戻り、このセルを実行し直すまで HF を使う処理が止まった）"""
+    if HF_CKPT_REPO_ID:
+        return HF_CKPT_REPO_ID
+    return f"{HF_ACCOUNT_NAME}/rethink-sft-ao-checkpoints" if HF_ACCOUNT_NAME else None
+
+
+print("HF checkpoint repo:", resolve_ckpt_repo_id(), "(private=%s)" % HF_CKPT_PRIVATE, "| upload during training:", HF_UPLOAD_CHECKPOINTS)
 
 
 def hf_repo_exists(repo_id, repo_type="model"):
@@ -20,13 +29,17 @@ def hf_repo_exists(repo_id, repo_type="model"):
         return False
 
 
-def hf_run_paths(repo_id, run_id):
-    """HF 上の runs/<run_id>/ 配下の global_step_* を列挙（完了マーカー ao_upload_verified.json の有無付き）"""
-    if not hf_repo_exists(repo_id):
+def hf_run_paths(repo_id, run_id, strict=False):
+    """HF 上の runs/<run_id>/ 配下の global_step_* を列挙（完了マーカー ao_upload_verified.json の有無付き）。
+    strict=False: repo を参照できない・一覧を取得できないときも {} を返す（「無い」と区別しない）。
+    strict=True: 一覧の取得に失敗したら例外を出す（再開で「通信の失敗」を「run が無い」と取り違えないため）"""
+    if not strict and not hf_repo_exists(repo_id):
         return {}
     try:
         files = HF_API.list_repo_files(repo_id, repo_type="model")
     except Exception:
+        if strict:
+            raise
         return {}
     out = {}
     for f in files:
@@ -266,6 +279,11 @@ def paper_condition_of(lr, epochs, scheduler):
     return None
 
 
+def wandb_dir_for(run_id):
+    """wandb の出力先（WANDB_DIR）。run ごとに分ける（offline の記録がどの run のものか、フォルダ名で分かるようにする）"""
+    return f"{WORK_DIR}/wandb/{run_id}"
+
+
 def make_run_id(kind, lr, epochs, tbs=None, suffix="", scheduler="cosine"):
     tbs = tbs or OFFICIAL_TBS
     base = f"{MODEL_KEY}_Math-AO-20k_lr{fmt_lr(lr)}_ep{epochs}_bs{tbs}" + ("_ConstLR" if scheduler == "constant" else "")   # 公式スクリプト名と同じ付け方
@@ -337,10 +355,10 @@ def build_run_spec(kind, lr, epochs, data_path, data_sha256, n_rows, max_length,
     if not KEEP_OFFICIAL_ENV_VARS:
         changes.append(dict(key="env:CUDA_LAUNCH_BLOCKING", official="1", new="<unset>", reason="KEEP_OFFICIAL_ENV_VARS=False（速度優先。公式は 1）"))
     env["WANDB_MODE"] = WANDB_MODE if (WANDB_MODE == "offline" or os.environ.get("WANDB_API_KEY")) else "offline"
-    env["WANDB_DIR"] = f"{WORK_DIR}/wandb"
+    env["WANDB_DIR"] = wandb_dir_for(run_id)
     env["VERL_SFT_LOGGING_LEVEL"] = "INFO"     # 再開ログ（checkpoint 読み込み等）を表示する。既存の環境変数
     changes.append(dict(key="env:WANDB_DIR / VERL_SFT_LOGGING_LEVEL / PYTHONUNBUFFERED", official="<unset>", new=f"{env['WANDB_DIR']} / INFO / 1",
-                        reason="wandb 出力先・再開ログ表示・ログ即時出力（学習内容に影響しない環境変数）"))
+                        reason="wandb 出力先（run ごとのフォルダ）・再開ログ表示・ログ即時出力（学習内容に影響しない環境変数）"))
     if n_gpus == OFFICIAL_WORLD_SIZE:
         _nproc_reason = "公式と同じ台数"
     elif view["enabled"]:
@@ -408,6 +426,39 @@ def print_run_spec(spec):
     print("  公式と揃えられない残りの差（数値の丸め程度）:")
     for r in spec["residual_differences"]:
         print(f"    - {r}")
+
+
+# ---- 学習ログの写し先（写す処理はセル 6-a。ドライランでも表示するのでここに置く） --------------------------
+COLAB_DRIVE_MOUNT = "/content/drive"
+
+
+def log_mirror_dir():
+    """学習ログの写し先。設定セルの LOG_MIRROR_DIR、無ければセル 0 が読んだ AO_DRIVE_LOG_DIR。どちらも無ければ None（写さない）"""
+    return LOG_MIRROR_DIR or os.environ.get("AO_DRIVE_LOG_DIR") or None
+
+
+def mirror_dir_problem(path):
+    """写し先に書けない理由を返す（問題が無ければ None）。その場合は書かない。
+    - 絶対パスでない: セル 0（Colab のカーネル）とこのカーネルは作業フォルダが違うので、相対パスは別の場所を指す
+    - Drive のパスなのに Drive がマウントされていない: ランタイムのディスクに同じ名前のフォルダを作って書いてしまい、切断で消える"""
+    if not os.path.isabs(path):
+        return f"写し先 {path} が絶対パスでない（例 {COLAB_DRIVE_MOUNT}/MyDrive/<フォルダ>）"
+    p = os.path.abspath(path)
+    if (p + os.sep).startswith(COLAB_DRIVE_MOUNT + os.sep) and not os.path.ismount(COLAB_DRIVE_MOUNT):
+        return f"{COLAB_DRIVE_MOUNT} がマウントされていない（Colab Secrets に AO_DRIVE_LOG_DIR を登録してセル 0 を実行し直すと、セル 0 がマウントする）"
+    return None
+
+
+def print_checklist(title, checks):
+    """合格条件を 1 行ずつ表示する。checks: [(条件, 合否, 補足)]。合否は True / False / None（この設定では対象外）。戻り値: NG だった条件のリスト"""
+    print(f"=== {title} ===")
+    ng = []
+    for name, ok, note in checks:
+        mark = "対象外" if ok is None else ("OK" if ok else "NG")
+        if ok is not None and not ok:
+            ng.append(name)
+        print(f"  [{mark}] {name}" + (f"（{note}）" if note not in (None, "") else ""))
+    return ng
 
 
 print("helpers ready: parse_official_script / build_run_spec / print_run_spec / get_base_model_local / fmt_lr / emulate_official_order / prepare_train_file")

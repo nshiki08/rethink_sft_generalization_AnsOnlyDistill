@@ -7,13 +7,15 @@
 
 1. GitHub の Fork `nshiki08/rethink_sft_generalization_AnsOnlyDistill` で `notebooks/ansonly_distillation.ipynb` を開き、「Open in Colab」または
    `https://colab.research.google.com/github/nshiki08/rethink_sft_generalization_AnsOnlyDistill/blob/main/notebooks/ansonly_distillation.ipynb` を開く（評価は同じ場所の `ansonly_eval.ipynb`）。
-2. ランタイム → GPU。**A100 を推奨**（公式 `requirements.txt` の torch 2.6.0 がそのまま動く）。
+2. ランタイム → GPU。A100 でも G4（RTX PRO 6000）でも学習できる。1 つの run は最初から最後まで同じ種類の GPU で行う（種類が違うと再開できない）。
+   - A100 は公式 `requirements.txt` の torch 2.6.0 がそのまま動く（公式との環境の差が最も少ない）
    - G4（RTX PRO 6000 Blackwell, sm_120）は torch 2.6.0 が動かない。セル 1 で `ALLOW_BLACKWELL_TORCH_DEVIATION=True` にすると torch 2.7.1+cu128（torch の要求で sympy も 1.13.1 → 1.13.3）を使い、公式との差として記録する
    - T4 は flash-attn 2 が動かないので不可
    - GPU メモリの推定: 1.7B 約 20 GiB、4B 約 38 GiB、8B 約 76 GiB（A100 80GB で余裕約 2 GiB。試走で実測）、14B 約 138 GiB（Colab の単一 GPU では不可）。詳細は `docs/ansonly/environment.md` の 5 節
 3. Colab の「シークレット」に以下を登録し、ノートブックからのアクセスを許可する。
    - `HF_TOKEN`（write 権限。checkpoint と最終モデルの保存に使う）
    - `WANDB_API_KEY`（任意。無ければ公式と同じ offline mode）
+   - `AO_DRIVE_LOG_DIR`（任意。学習ログの写し先にする Drive のフォルダ。例 `/content/drive/MyDrive/<フォルダ>`）。登録するとセル 0 が Drive をマウントし、学習中の loss の推移とログが `<フォルダ>/<run_id>/` に写される。パスは絶対パスで書く（相対パスは警告が出て、写されない）。Colab は切断でランタイムのディスクが消えるので、セル 0 を実行する前に登録する。後から登録・変更した場合はセル 0 を実行し直す（公式環境のカーネルが動いていれば、そこにも渡される。登録を消した場合はランタイムを再起動する）。checkpoint は Drive に置かない（HF へ転送する）
 
 ## 2. 設定
 
@@ -31,7 +33,8 @@
 | 再開用の間隔 | `RESUME_CKPT_EVERY` | 80（optimizer 状態込みで送る間隔。切断時は最大この step 数を再実行） |
 | 分析用 step の中身 | `HF_ANALYSIS_STEP_CONTENT` | `"model_only"`（再開用以外の step は重みだけ送る。変換・分析はできるが再開はできない）/ `"full"` |
 | 公式 8 GPU の再現 | `EMULATE_OFFICIAL_WORLD_SIZE` | `True`（下記） |
-| HF 保存先 | `HF_CKPT_REPO_ID` / `HF_FINAL_MODEL_REPO_ID` | `None` → HF の whoami から決める |
+| HF 保存先 | `HF_CKPT_REPO_ID` / `HF_FINAL_MODEL_REPO_ID` | `None` → HF の whoami から決める（使う直前に決めるので、設定セルを実行し直しても 4-a の再実行は要らない） |
+| 学習ログの写し先 | `LOG_MIRROR_DIR`, `LOG_MIRROR_INTERVAL_SEC` | `None`（セル 0 が読んだ `AO_DRIVE_LOG_DIR` を使う。それも無ければ写さない）/ 60 秒ごと。`LOG_MIRROR_DIR` は絶対パスで書く。Drive をマウントするのはセル 0（`AO_DRIVE_LOG_DIR` が Drive のパスのとき）だけなので、Drive のフォルダは `AO_DRIVE_LOG_DIR` で指定する |
 | 試走 | `TRIAL_NUM_ROWS`, `TRIAL_EPOCHS`, `TRIAL_SAVE_FREQ`, `TRIAL_KILL_AFTER_STEP` | 512 行 / 4 epoch / 3 / 3 |
 | 再開 | `RESUME_RUN_ID`, `RESUME_STEP` | `None` / `"latest"` |
 | 評価（評価ノートブック） | `PAPER_EVAL_AO_RUNS`, `PAPER_EVAL_AO_STEPS`, `PAPER_EVAL_BASE`, `PAPER_EVAL_COT_STEPS` | None（HF にある `MODEL_KEY` の本学習 run すべて）/ 論文の評価 step / Base と CoT は論文の値を使う |
@@ -77,20 +80,26 @@ bf16 で残る差は、fp32 では一致する 2 つの計算どうしでも同�
 
 - 3 で `AO_DATA_READY`、4-b で `MASK_CHECK_OK` が `True` にならなければ、本学習のセルは開始しない。
 - `EMULATE_OFFICIAL_WORLD_SIZE=True` では、4-b の `VIEW_CHECK_OK`（公式 8 GPU の micro batch 構成の再現確認）も必要。4-b は学習に使うのと同じ GPU 台数で確認するので、学習する GPU ランタイムで 4-b をもう一度実行する（台数が違うと本学習のセルが止まる）。`False` にした場合は警告を出して学習し、公式との差として記録する。
-- 5 で起動コマンド・想定 step 数・保存回数・HF 保存先・衝突の有無を確認する。
+- 5 で起動コマンド・想定 step 数・保存回数・HF 保存先・衝突の有無を確認する。最後に「ドライランの合格条件」が 1 行ずつ `[OK]` / `[NG]` で出る（学習を始める前に満たしておく条件の一覧。セル 5 は NG でも止まらない。本学習のセルは開始前に同じ条件を確かめて止まるが、「公式コード」の行は表示と記録だけ）。その下に学習ログの写し先も出る。
 
 次に `RUN_MODE="trial"` にして 6-a → 6-b（試走）。試走の流れ:
 学習 → `TRIAL_KILL_AFTER_STEP` の checkpoint 保存完了を検知 → 学習プロセスを一時停止（SIGSTOP）→ HF へ転送・検証 → プロセス終了（切断の模擬）
 → ローカル checkpoint を削除 → HF から取得・manifest 検証 → 新プロセスで再開 → 最終 step まで学習 → 中断なしの参照 run と lr / loss を比較。
 試走の run は `trial-` で始まり、本学習と別ディレクトリ・別データ（先頭 512 行、4 epoch = 8 step）を使う。試走の checkpoint は本学習に使わない。
 試走 run の再開は同じセッション内でだけ成立する（試走データは 6-b が作るため）。
+6-b の最後に「試走の合格条件」の一覧と、HF 上の試走 run・各 checkpoint の URL が出る。
 
 本学習は `RUN_MODE="train"`、`RUN_KIND="baseline"` で 7、`RUN_KIND="search"` かつ `SEARCH_RUN_LIST` を設定して 8。
 
 学習中は 1 セルが終了まで動き続け、監視スレッドが保存完了ごとに checkpoint を HF の
 `runs/<run_id>/global_step_<N>/` へ転送・検証し、完了マーカー `ao_upload_verified.json` を置く。過去 step は上書き・削除しない。
+step ごとの loss・lr・grad_norm は `log/<run_id>/<起動時刻>.metrics.jsonl` に 1 step ごとに 1 行追記される（学習の終了を待たない）。
+写し先（`AO_DRIVE_LOG_DIR` / `LOG_MIRROR_DIR`）があれば、別スレッドがログ一式を `<写し先>/<run_id>/` へ写す。写しに失敗しても警告が出るだけで、学習は止まらない。
 
 ## 4. 評価（別ノートブック `notebooks/ansonly_eval.ipynb`）
+
+比較表に使う本走の評価（Base・CoT 学生・AO 学生を同じ手順・同じ環境で測る）は、評価用の別リポジトリ（評価キット）で行う。
+このノートブックは、AO の checkpoint を HF から取って論文と同じ方法で測る処理として、そのまま残している（評価の手順は変えていない）。
 
 論文と同じ方法で評価する: 公式の `evaluation/math_eval/math_eval_budget.py` を無変更で実行する（MATH500 avg@3、AIME24 avg@10、temperature 0.6、top_p 0.95、最大 32768 token、math-verify）。
 学習とは別のセッションで実行してよい。HF の checkpoint を step ごとに取得・変換して評価する。
@@ -114,7 +123,8 @@ bf16 で残る差は、fp32 では一致する 2 つの計算どうしでも同�
 
 ## 6. 成果物
 
-- ローカル: `/content/ao_work/{data,models,ckpt,log,records,merged}`（Colab のディスク。切断で消える）
+- ローカル: `/content/ao_work/{data,models,ckpt,log,records,merged,wandb}`（Colab のディスク。切断で消える）。`log/<run_id>/` に起動ごとの `.log` / `.metrics.jsonl` / `.spec.json` / `.cmd.txt` / `.result.json`、`wandb/<run_id>/` にその run の wandb（offline）の記録
+- 学習ログの写し先（指定した場合。Drive など）: `<写し先>/<run_id>/` に上の `log/<run_id>/` の内容と実験記録
 - HF checkpoint repo: `runs/<run_id>/global_step_<N>/`（model/optimizer/extra の shard, `data.pt`, `huggingface/`, `ao_ckpt_manifest.json`, `ao_upload_verified.json`。重みだけの step は optimizer の shard なし）と `runs/<run_id>/experiment_record_*.json`
 - HF の使用量（実測サイズから計算）: 1.7B は再開用 1 個 10.34 GB・重みのみ 3.46 GB で baseline 1 run 約 93 GB、4B は 24.15 GB・8.06 GB で約 217 GB。HF PRO の非公開枠は 1 TB（超過分は 1 TB あたり月 $18）
 - HF 最終モデル repo: `step<N>/`（`verl.model_merger` で変換した HF 形式）と `README.md`（Model Card）
@@ -128,4 +138,5 @@ bf16 で残る差は、fp32 では一致する 2 つの計算どうしでも同�
 - Colab 上での公式環境の作成（uv の Python 3.12、公式 pin、flash-attn wheel）と公式環境カーネルの起動。同じ手順は CPU で検証済み（`tests/test_env_bootstrap.py`）
 - G4 での torch 2.7.1+cu128 と flash-attn の動作、1 GPU の FSDP2 勾配確認の GPU 上での結果
 - 試走（学習・保存・HF 転送・終了・再開）、本学習、GPU メモリ、所要時間
+- Drive への学習ログの写し（Colab の Drive マウント上での動作。CPU では通常のフォルダを写し先にして検証した）
 - `verl.model_merger` による変換と最終モデルの読み込み・生成

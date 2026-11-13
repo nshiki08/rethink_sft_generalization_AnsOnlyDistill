@@ -15,7 +15,7 @@
 
 | # | セクション | 内容 | 実行するカーネル | GPU |
 | --- | --- | --- | --- | --- |
-| 0 | 認証 | Colab Secrets（`HF_TOKEN`, 任意で `WANDB_API_KEY`）を読む。値は表示しない | Colab | 不要 |
+| 0 | 認証 | Colab Secrets（`HF_TOKEN`, 任意で `WANDB_API_KEY`）を読む。値は表示しない。`AO_DRIVE_LOG_DIR`（任意。学習ログの写し先）があれば Drive をマウントする | Colab | 不要 |
 | 1 | 環境構築 | Fork の clone（`upstream` は push 無効）、Python 3.12 の公式環境を作り公式 pin を導入、公式環境カーネルを起動 | Colab | 不要 |
 | 設定 | 設定セル | モデル・revision・保存先・実行モード・学習設定・探索候補・HF 設定をここで編集 | 公式環境 | 不要 |
 | 2 | 環境記録・研究条件 | 環境の記録、HF ログイン、1 GPU の FSDP2 勾配確認、対応モデル・AO target の説明 | 公式環境 | 確認のみ |
@@ -29,6 +29,7 @@
 | 9 | 最終モデル | `verl.model_merger` で HF 形式へ変換、HF 保存、読み込み・生成確認、Model Card | 公式環境 | 必要 |
 
 評価（論文と同じ MATH500 avg@3 / AIME24 avg@10）は別のノートブック `notebooks/ansonly_eval.ipynb` で行う。学習とは別のセッションで、HF の checkpoint から評価できる。
+比較表に使う本走の評価（Base・CoT 学生・AO 学生を同じ手順・同じ環境で測る）は、評価用の別リポジトリ（評価キット）で行う。
 
 ## 2 つのカーネル
 
@@ -38,9 +39,11 @@ Colab の Python は 3.13（2026-08 から）で、公式 `requirements.txt` の
 
 | GPU | 環境 |
 | --- | --- |
-| A100（推奨） | 公式 `requirements.txt` のまま（torch 2.6.0, flash-attn 2.7.4.post1） |
+| A100 | 公式 `requirements.txt` のまま（torch 2.6.0, flash-attn 2.7.4.post1） |
 | G4（RTX PRO 6000 Blackwell） | torch 2.6.0 が動かない。セル 1 の `ALLOW_BLACKWELL_TORCH_DEVIATION=True` で torch 2.7.1+cu128（と torch が要求する sympy 1.13.3）を使い、公式との差として記録する |
 | T4 など（compute capability < 8.0） | flash-attn 2 が動かないので不可 |
+
+A100 でも G4 でも学習できる。1 つの run は最初から最後まで同じ種類の GPU で行う（種類が違うと再開できない）。
 
 ## 公式 CoT 学習との条件合わせ（GPU 台数）
 
@@ -59,6 +62,7 @@ checkpoint は公式と同じ 10 step ごとに保存する。HF へは、再開
 
 - 既定の `RUN_MODE` は `"dry_run"`。学習と HF 書き込みは `"trial"` / `"train"` にしないと始まらない。
 - Colab の切断でプロセスは消える。学習中の checkpoint は監視スレッドが保存完了ごとに HF へ転送し、過去 step は消さない。
+- step ごとの loss は `log/<run_id>/<起動時刻>.metrics.jsonl` に 1 step ごとに追記される。Colab Secrets に `AO_DRIVE_LOG_DIR`（Drive のフォルダ）を登録しておくと、ログ一式が Drive の `<フォルダ>/<run_id>/` に写され、切断しても残る。
 - 公式実装（`verl/`, `training_scripts/`）は変更しない。追加処理はすべてこのノートブックにある。
 - `git push` 先は Fork のみ。オリジナル (`Nebularaid2000/...`) は fetch 専用で push URL を無効化する。
 - このノートブックの静的検証は CPU 環境で行った。GPU を要する項目（試走・学習・再開・変換）は各セルの実行ログが確認根拠になる。未実行の項目を「動作確認済み」とは書かない。

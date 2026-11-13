@@ -12,6 +12,7 @@
 | `notebooks/ansonly_src/tests/test_launch_monitor.py` | 偽 trainer（`tests/fake_trainer/`）で 起動・監視・中断・再開・manifest・アップロード方針 を検証する |
 | `notebooks/ansonly_src/tests/test_eval_helpers.py` | 評価の CPU で確認できる部分（公式評価スクリプトのデータパスとローダー、結果ファイルの読み取り、論文値、評価する run の選び方） |
 | `notebooks/ansonly_src/tests/test_env_bootstrap.py` | Colab と同じ構成（Python 3.13 のカーネル → uv の Python 3.12 公式環境 → 公式環境カーネル）でセル 0〜5 を CPU で実行する |
+| `notebooks/ansonly_src/tests/test_gpu_probe_messages.py` | セル 1 の GPU のエラー文（CUDA を初期化できない / その GPU 用のコードが torch に無い）の出し分け。セルから関数だけを取り出して実行する（GPU・ネットワーク不要、Python は何でもよい） |
 | `notebooks/README_ansonly.md` | 利用者向けの使い方 |
 | `docs/ansonly/*.md` | 開発者向けの背景・決定事項・ハマりポイント |
 
@@ -21,7 +22,8 @@
 # 1. notebooks/ansonly_src/cells/ を編集
 python notebooks/ansonly_src/build_nb.py                        # 2. ipynb を再生成
 python notebooks/ansonly_src/tests/run_cells_local.py 08         # 3. CPU で設定〜セル 5（ドライラン）まで実行
-python notebooks/ansonly_src/tests/test_launch_monitor.py        # 4. 起動・監視・再開の検証（3 の後に実行）
+python notebooks/ansonly_src/tests/test_launch_monitor.py        # 4. 起動・監視・再開・学習ログの写しの検証（3 の後に実行）
+python notebooks/ansonly_src/tests/test_gpu_probe_messages.py    #    セル 1 の GPU のエラー文
 <python3.13 + jupyter_client + uv> notebooks/ansonly_src/tests/test_env_bootstrap.py 08   # 5. セル 1（環境構築）を含む Colab の流れ
 ```
 
@@ -33,16 +35,16 @@ python notebooks/ansonly_src/tests/test_launch_monitor.py        # 4. 起動・�
 
 | セル | ファイル | 役割 | 主な出力（グローバル変数） |
 | --- | --- | --- | --- |
-| 0 | `01_auth.py` | **Colab カーネル**。Colab Secrets / 環境変数の `HF_TOKEN`, `WANDB_API_KEY` を環境変数に入れる（表示しない） | — |
+| 0 | `01_auth.py` | **Colab カーネル**。Colab Secrets / 環境変数の `HF_TOKEN`, `WANDB_API_KEY` を環境変数に入れる（表示しない）。`AO_DRIVE_LOG_DIR`（学習ログの写し先、任意）が Drive のフォルダなら Drive をマウントする | 環境変数 `AO_DRIVE_LOG_DIR` |
 | 1 | `02_env_bootstrap.py` | **Colab カーネル**。GPU 判定（プロファイル）、Fork の clone（`upstream` は push 無効）、uv で Python 3.12 の公式環境を作成・pin 導入・確認、公式環境カーネルを起動し `%%ao` を登録 | `AO_KERNEL`, `records/env_bootstrap.json` |
 | 設定 | `03_config.py` | 利用者が編集する実験の設定（モデル・revision・実行モード・保存方針） | `SUPPORTED_MODELS` など |
 | 2 | `04_section2_env_conditions.py` | 環境の記録、HF ログイン（whoami）、1 GPU の FSDP2 勾配確認、研究条件の表示 | `N_GPUS`, `PKG_VERSIONS`, `ENV_RECORD`, `HF_ACCOUNT_NAME`, `FSDP2_GRAD_CHECK` |
 | 3 | `05_section3_data.py` | Math-CoT-20k 取得 → `</think>` 以降の最後の `\boxed{}` を抽出 → math-verify で参照正解と照合 → 全行監査 | `AO_PARQUET`, `AO_SHA256`, `AO_DATA_READY` |
-| 4-a | `06_helpers_runspec.py` | 公式スクリプトの解析、run spec 生成、8 GPU 再現用の並べ替え | `build_run_spec()`, `prepare_train_file()` |
+| 4-a | `06_helpers_runspec.py` | 公式スクリプトの解析、run spec 生成、8 GPU 再現用の並べ替え、checkpoint repo の ID の決定 | `build_run_spec()`, `prepare_train_file()`, `resolve_ckpt_repo_id()`, `print_checklist()`, `log_mirror_dir()`, `mirror_dir_problem()` |
 | 4-b | `07_section4_length_mask.py` | 公式 tokenizer・dataset クラスで全行の長さと loss mask を確認、`max_length` 決定、並べ替えの照合 | `MAX_LENGTH`, `MASK_CHECK_OK`, `VIEW_CHECK_OK` |
-| 5 | `08_section5_dryrun.py` | 起動コマンド・step 数・保存・HF 保存先の確認（学習しない） | — |
-| 6-a | `09_helpers_launch_monitor_hf.py` | 学習起動、監視スレッド、HF 転送・検証、再開、merge、実験記録 | `launch_training()` など |
-| 6-b | `10_section6_trial.py` | 試走: 学習 → 保存 → 一時停止 → HF 転送 → 終了 → HF から取得 → 再開 → 参照 run と比較 | — |
+| 5 | `08_section5_dryrun.py` | 起動コマンド・step 数・保存・HF 保存先の確認（学習しない）。最後に合格条件の一覧を表示 | `DRY_RUN_CHECKS` |
+| 6-a | `09_helpers_launch_monitor_hf.py` | 学習起動、監視スレッド、HF 転送・検証、学習ログの写し、再開、merge、実験記録 | `launch_training()`, `LogMirror` など |
+| 6-b | `10_section6_trial.py` | 試走: 学習 → 保存 → 一時停止 → HF 転送 → 終了 → HF から取得 → 再開 → 参照 run と比較。最後に合格条件の一覧と HF の URL を表示 | `RESUME_CHECKS` |
 | 7 / 8 | `11_*`, `12_*` | baseline / LR・epoch 探索 | — |
 | 再開 | `13_resume.py` | HF の checkpoint から再開 | — |
 | 評価（評価ノートブックのみ） | `14_section9_eval.py` | 論文と同じ評価。HF の checkpoint を取得・変換し、評価用の別環境（Python 3.12 + vLLM 0.8.5）で公式 `math_eval_budget.py` を無変更で実行（データの絶対パスはシンボリックリンク）。run_id 未指定なら HF にある `MODEL_KEY` の本学習 run を評価する | `PAPER_EVAL_RESULTS` |
@@ -53,7 +55,11 @@ python notebooks/ansonly_src/tests/test_launch_monitor.py        # 4. 起動・�
 1. `build_run_spec()` が公式スクリプト（例 `training_scripts/Qwen3-1.7B_Math-CoT-20k_lr5e-5_ep8_bs256.sh`）を解析し、hydra 引数を公式と同じ値で組み立てる。公式と変える引数は `changes_vs_official` に理由付きで記録する
 2. `launch_training()` が `python -m torch.distributed.run --nproc_per_node=N -m verl.trainer.fsdp_sft_trainer_ours <hydra 引数>` を新しい process group で起動する
 3. `TrainingMonitor`（スレッド）が `global_step_<N>/` の保存完了を検知 → HF の `runs/<run_id>/global_step_<N>/` へ転送し sha256 manifest で検証 → 完了マーカー `ao_upload_verified.json` を置く。再開用の step（`upload_full_steps`）は optimizer 状態込み、それ以外は重みだけ（marker と manifest の `content`）。学習は転送中も進む。アップロード対象外の step はローカルから削除する。試走（`kill_after_step`）だけは SIGSTOP で学習を止めてから転送し、SIGTERM で終了して切断を模擬する
-4. 再開時は HF から取得し manifest で検証してから `trainer.resume_mode=resume_path` で起動する
+4. `launch_training()` は学習プロセスの出力を読み、ログを `log/<run_id>/<起動時刻>.log` に、step ごとの loss などを `.metrics.jsonl` に、どちらも 1 行ごとに書き出す（切断・カーネル終了でも途中まで残る）。写し先（設定セルの `LOG_MIRROR_DIR`、無ければセル 0 が読んだ `AO_DRIVE_LOG_DIR`）があれば、`LogMirror`（スレッド）が一定間隔で `<写し先>/<run_id>/` へ、まだ写していない末尾だけを追記する。写しの失敗は警告だけで、学習プロセスにも出力の読み取りにも影響しない
+5. 再開時は HF から取得し manifest で検証してから `trainer.resume_mode=resume_path` で起動する
+
+checkpoint repo の ID は `resolve_ckpt_repo_id()` が使う直前に決める（設定セルの `HF_CKPT_REPO_ID`、`None` なら HF のアカウント名から）。HF を使うコードは `HF_CKPT_REPO_ID` を直接読まない。
+wandb（offline）の出力先は run ごとの `wandb/<run_id>/`（`WANDB_DIR`。学習内容に影響しない環境変数として `changes_vs_official` に記録される）。
 
 ## 4. データの流れ
 

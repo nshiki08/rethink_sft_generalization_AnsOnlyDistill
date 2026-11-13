@@ -3,7 +3,7 @@
 Run run_cells_local.py up to cell 05 first (it creates the real AO parquet in $AO_TEST_WORK_DIR).
 Usage: python notebooks/ansonly_src/tests/test_launch_monitor.py
 """
-import os, sys, json, time, glob, shutil, hashlib
+import os, sys, json, time, glob, shutil, hashlib, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.dirname(HERE)
@@ -48,6 +48,143 @@ run_cell("06_helpers_runspec.py")
 get_base_model_local = lambda: os.path.join(TEST_WORK, "tok", "Qwen3-1.7B-Base")
 run_cell("09_helpers_launch_monitor_hf.py")
 
+# --- checkpoint repo は使う直前に決める: 設定セルを実行し直して HF_CKPT_REPO_ID が None に戻っても、4-a を実行し直さずに HF を使える
+class _FakeRepoApi:
+    def __init__(self):
+        self.created = []
+
+    def create_repo(self, repo_id, private=True, repo_type="model", exist_ok=True):
+        self.created.append((repo_id, private))
+
+    def repo_info(self, repo_id, repo_type="model"):
+        return True
+
+    def list_repo_files(self, repo_id, repo_type="model"):
+        return []
+
+
+assert HF_CKPT_REPO_ID is None and resolve_ckpt_repo_id() is None and hf_run_url("r") is None   # 未ログイン
+HF_API, HF_ACCOUNT_NAME = _FakeRepoApi(), "someone"
+assert ensure_ckpt_repo() == "someone/rethink-sft-ao-checkpoints"
+run_cell("03_config.py")                                 # 設定セルの再実行（HF_CKPT_REPO_ID = None に戻る）。4-a は実行し直さない
+assert HF_CKPT_REPO_ID is None, "設定セルの既定値は None のまま（4-a が書き換えない）"
+assert ensure_ckpt_repo() == "someone/rethink-sft-ao-checkpoints" and HF_API.created == [("someone/rethink-sft-ao-checkpoints", True)] * 2
+assert hf_run_url("r") == "https://huggingface.co/someone/rethink-sft-ao-checkpoints/tree/main/runs/r"
+try:   # 再開: run が HF に無いときは、その理由で止まる
+    resume_run_from_hf("no-such-run"); raise RuntimeError("resume of a missing run did not stop")
+except SystemExit as e:
+    assert "no-such-run" in str(e) and "1 つも無い" in str(e), e
+class _FailingListApi(_FakeRepoApi):
+    def list_repo_files(self, repo_id, repo_type="model"):
+        raise ConnectionError("simulated timeout")
+
+
+HF_API = _FailingListApi()
+try:   # 再開: ファイル一覧を取得できない（通信の失敗）ときは「run が無い」ではなく、その理由で止まる
+    resume_run_from_hf("some-run"); raise RuntimeError("resume with a failing file listing did not stop")
+except SystemExit as e:
+    assert "一覧を取得できない" in str(e) and "simulated timeout" in str(e) and "1 つも無い" not in str(e), e
+assert list_hf_checkpoints("some-run") == []              # 既定（strict=False）の呼び出し側はこれまでどおり空の一覧を受け取る
+# 転送: 一覧を取得できないときは転送しない（完了済みの step を「HF に無い」と取り違えて上書きしない）
+class _NoUploadApi(_FailingListApi):
+    def upload_folder(self, **kw):
+        raise RuntimeError("upload_folder was called although the file listing failed")
+
+
+HF_API = _NoUploadApi()
+_up = upload_checkpoint(dict(run_id="some-run"), 80, "/nonexistent", log=lambda *a: None)
+assert _up["status"] == "upload_failed" and "file listing failed" in _up["error"], _up
+# 再開: 完了マーカーが HF にあるのに取得できない（通信の失敗）ときは「転送が不完全」ではなく、その理由で止まる
+class _MarkerRepoApi(_FakeRepoApi):
+    def list_repo_files(self, repo_id, repo_type="model"):
+        return [f"runs/some-run/global_step_{s}/{n}" for s in (80, 160) for n in ("ao_upload_verified.json", "ao_ckpt_manifest.json")]
+
+
+def _failing_download(*a, **k):
+    raise ConnectionError("simulated marker timeout")
+
+
+HF_API, _orig_download, hf_hub_download = _MarkerRepoApi(), hf_hub_download, _failing_download
+try:
+    try:
+        resume_run_from_hf("some-run"); raise RuntimeError("resume with unreadable markers did not stop")
+    except SystemExit as e:
+        assert "step 80 の完了マーカーを取得できない" in str(e) and "simulated marker timeout" in str(e) and "再開できる checkpoint" not in str(e), e
+    _rows = list_hf_checkpoints("some-run")                # 既定（strict=False）はこれまでどおり未完了として返す
+    assert [(r["step"], r["complete"], r["resumable"]) for r in _rows] == [(80, False, False), (160, False, False)] and _rows[0]["marker_error"], _rows
+finally:
+    hf_hub_download = _orig_download
+HF_API = _FakeRepoApi()
+HF_CKPT_REPO_ID = "org/explicit"                          # 設定セルで指定した値はそのまま使う
+assert resolve_ckpt_repo_id() == "org/explicit" and ensure_ckpt_repo() == "org/explicit"
+HF_CKPT_REPO_ID, HF_API, HF_ACCOUNT_NAME = None, None, None
+for _f in (ensure_ckpt_repo, lambda: resume_run_from_hf("x")):   # 未ログインは「checkpoint が無い」ではなく「ログインしていない」で止まる
+    try:
+        _f(); raise RuntimeError("HF call without login did not stop")
+    except AssertionError as e:
+        assert "ログインしていない" in str(e), e
+print("checkpoint repo resolution OK")
+
+# --- unit: print_checklist（合格条件の一覧。None は対象外で NG に数えない）
+assert print_checklist("t", [("a", True, None), ("b", False, "why"), ("c", None, "n/a")]) == ["b"]
+
+# --- unit: 学習ログの写し（写し先の決め方、Drive 未マウントの検出、末尾だけの追記）
+LOG_MIRROR_DIR = None
+os.environ.pop("AO_DRIVE_LOG_DIR", None)
+assert log_mirror_dir() is None
+os.environ["AO_DRIVE_LOG_DIR"] = "/tmp/from_env"
+assert log_mirror_dir() == "/tmp/from_env"
+LOG_MIRROR_DIR = f"{WORK_DIR}/mirror"
+assert log_mirror_dir() == f"{WORK_DIR}/mirror"                      # 設定セルの値が優先
+os.environ.pop("AO_DRIVE_LOG_DIR")
+assert mirror_dir_problem(f"{WORK_DIR}/mirror") is None
+if not os.path.ismount("/content/drive"):
+    assert "マウントされていない" in mirror_dir_problem("/content/drive/MyDrive/x/run")   # ランタイムのディスクに書いてしまうのを防ぐ
+for _rel in ("drive/MyDrive/x", "~/x", "mirror"):                    # 相対パスはカーネルごとに別の場所を指すので書かない
+    assert "絶対パスでない" in mirror_dir_problem(_rel), _rel
+_src, _dst = f"{WORK_DIR}/tail_src.txt", f"{WORK_DIR}/tail_dst.txt"
+open(_src, "w").write("a\n")
+assert append_missing_tail(_src, _dst) == 2
+open(_src, "a").write("bb\n")
+assert append_missing_tail(_src, _dst) == 3 and open(_dst).read() == "a\nbb\n" and append_missing_tail(_src, _dst) == 0
+open(_dst, "a").write("longer than the source")
+try:
+    append_missing_tail(_src, _dst); raise RuntimeError("a longer destination was overwritten")
+except OSError:
+    assert open(_dst).read().startswith("a\nbb\n")                   # 写し先の内容は消さない
+# 写し先の大きさを取れないとき（「まだ無い」以外の理由）は例外にして、何も書かない（「まだ無い」と取り違えて全体を追記し直さない）
+_dst2 = f"{WORK_DIR}/tail_dst2.txt"
+assert append_missing_tail(_src, _dst2) == 5 and open(_dst2).read() == "a\nbb\n"
+_orig_getsize = os.path.getsize
+
+
+def _getsize_io_error(p):
+    if p == _dst2:
+        raise OSError(5, "simulated I/O error")
+    return _orig_getsize(p)
+
+
+os.path.getsize = _getsize_io_error
+try:
+    append_missing_tail(_src, _dst2); raise RuntimeError("an unreadable destination was treated as missing")
+except OSError as e:
+    assert "simulated I/O error" in str(e), e
+finally:
+    os.path.getsize = _orig_getsize
+assert open(_dst2).read() == "a\nbb\n"                              # 重複して追記されていない
+# 1 つのファイルを写せなくても（写し先のほうが長い）、ほかのファイルは写す。失敗は失敗として数える
+_iso_src, _iso_dst = f"{WORK_DIR}/iso_src", f"{WORK_DIR}/iso_dst"
+os.makedirs(_iso_src); os.makedirs(_iso_dst)
+open(f"{_iso_src}/T.a.txt", "w").write("x\n"); open(f"{_iso_src}/T.b.txt", "w").write("yy\n")
+open(f"{_iso_dst}/T.a.txt", "w").write("longer than the source\n")
+_lm = LogMirror(_iso_src, _iso_dst, "T", interval_sec=60)
+try:
+    _lm.sync_once(); raise RuntimeError("a failed file was not reported")
+except OSError:
+    assert open(f"{_iso_dst}/T.b.txt").read() == "yy\n" and _lm.state["syncs_ok"] == 0 and _lm.state["bytes_copied"] == 3
+    assert open(f"{_iso_dst}/T.a.txt").read() == "longer than the source\n"
+print("log mirror unit checks OK")
+
 # --- unit: parse_metric_line
 m = parse_metric_line("step:12 - train/loss:0.123 - train/lr:4.5e-05 - train/grad_norm:1.5 - train/entropy/mean:0.2")
 assert m == dict(step=12, **{"train/loss": 0.123, "train/lr": 4.5e-05, "train/grad_norm": 1.5, "train/entropy/mean": 0.2}), m
@@ -64,6 +201,8 @@ print("hydra_value/fmt_lr OK")
 spec = build_run_spec("trial", 5e-5, 3, data_path=AO_PARQUET, data_sha256=AO_SHA256, n_rows=512, max_length=1536, save_freq=3, run_id="trial-launchtest", upload_policy="all")
 assert spec["upload_steps"] == [3, 6]
 spec_c = build_run_spec("baseline", 5e-5, 8, data_path=AO_PARQUET, data_sha256=AO_SHA256, n_rows=20480, max_length=1536, save_freq=10, run_id="x")
+# wandb の出力先は run ごと（offline の記録がどの run のものか分かる）
+assert spec["env"]["WANDB_DIR"] == f"{WORK_DIR}/wandb/trial-launchtest" and spec_c["env"]["WANDB_DIR"] == f"{WORK_DIR}/wandb/x"
 assert spec_c["upload_steps"] == [10, 20, 40, 80, 160, 240, 320, 400, 480, 560, 640], spec_c["upload_steps"]
 assert spec_c["upload_full_steps"] == [80, 160, 240, 320, 400, 480, 560, 640], spec_c["upload_full_steps"]   # 10/20/40 は重みのみ
 assert checkpoint_content_for(spec_c, 10) == "model_only" and checkpoint_content_for(spec_c, 80) == "full"
@@ -114,9 +253,21 @@ m = parse_metric_line("step:5 - train/loss:nan - train/lr:1e-05 - train/grad_nor
 assert m["step"] == 5 and m["train/lr"] == 1e-05 and m["train/loss"] != m["train/loss"], m
 
 # --- run A: kill after step 3 (upload disabled -> pause + kill when local checkpoint complete)
+LOG_MIRROR_INTERVAL_SEC = 0.5   # 学習ログの写し（LOG_MIRROR_DIR は上で設定済み）
 resA = launch_training(spec, kill_after_step=3, upload=False, poll_sec=1, stable_scans=False)
 assert resA["killed_by_monitor"], resA
 stepsA = [m["step"] for m in resA["metrics"]]
+# step ごとの loss はファイルにも 1 行ずつ書かれ、写し先にログ一式が届く
+_rowsA = [json.loads(l) for l in open(resA["metrics_path"])]
+assert [r["step"] for r in _rowsA] == stepsA and _rowsA[0] == json.loads(json.dumps(resA["metrics"][0])), _rowsA[:1]
+assert resA["log_mirror"]["failures"] == 0 and resA["log_mirror"]["syncs_ok"] >= 2, resA["log_mirror"]
+_mdirA = f"{WORK_DIR}/mirror/trial-launchtest"
+assert resA["log_mirror"]["dst_dir"] == _mdirA
+for _ext in (".log", ".metrics.jsonl", ".spec.json", ".cmd.txt", ".result.json"):
+    _f = resA["log_path"][:-len(".log")] + _ext
+    assert open(_f, "rb").read() == open(os.path.join(_mdirA, os.path.basename(_f)), "rb").read(), f"mirror differs: {_ext}"
+assert os.path.isdir(spec["env"]["WANDB_DIR"])
+print("metrics.jsonl / log mirror OK:", resA["log_mirror"])
 assert stepsA[0] == 1 and 3 in resA["monitor"]["complete_local"], resA["monitor"]
 assert max(stepsA) < spec["total_steps"], f"run A must be interrupted before the end: {stepsA}"
 assert 6 not in resA["monitor"]["complete_local"]
@@ -146,9 +297,16 @@ assert specB["overrides"]["data.train_files"] == spec["train_file"] and specB["o
 assert specB["data_path"] == AO_PARQUET and specB["training_view"]["order_sha256"] == spec["training_view"]["order_sha256"]
 assert abs(resA["metrics"][0]["train/loss_official_scale"] - resA["metrics"][0]["train/loss"] / 0.125) < 1e-12
 specB["module"] = "fake_trainer"
+assert specB["env"]["WANDB_DIR"] == f"{WORK_DIR}/wandb/trial-launchtest"
+# 写し先に書けなくても学習は止まらない（写し先のパスの途中が通常ファイル → フォルダを作れない）
+open(f"{WORK_DIR}/mirror_blocked", "w").write("not a directory")
+LOG_MIRROR_DIR = f"{WORK_DIR}/mirror_blocked/sub"
 resB = launch_training(specB, upload=False, poll_sec=1)
+LOG_MIRROR_DIR = f"{WORK_DIR}/mirror"
 stepsB = [m["step"] for m in resB["metrics"]]
 assert resB["exit_code"] == 0 and stepsB == [4, 5, 6], stepsB
+assert resB["log_mirror"]["failures"] >= 2 and resB["log_mirror"]["syncs_ok"] == 0 and resB["log_mirror"]["last_error"], resB["log_mirror"]
+assert [json.loads(l)["step"] for l in open(resB["metrics_path"])] == [4, 5, 6]   # ランタイム側のファイルには残る
 logB = open(resB["log_path"]).read()
 assert "Loaded optimizer from" in logB and "Successfully loaded dataloader state" in logB
 assert 6 in resB["monitor"]["complete_local"]
@@ -186,8 +344,26 @@ print("model_only checkpoint / GPU profile checks OK")
 spec_p = build_run_spec("trial", 5e-5, 3, data_path=AO_PARQUET, data_sha256=AO_SHA256, n_rows=512, max_length=1536, save_freq=3, run_id="trial-policy")
 assert spec_p["upload_steps"] == [6], spec_p["upload_steps"]
 spec_p["module"] = "fake_trainer"
+# 写し先の metrics.jsonl に、学習の途中で行が届くこと（終了後にまとめて書くのではない）を見張る
+_first_seen, _stop_watch = {}, threading.Event()
+
+
+def _watch_mirror():
+    while not _stop_watch.is_set():
+        for _p in glob.glob(f"{WORK_DIR}/mirror/trial-policy/*.metrics.jsonl"):
+            if _p not in _first_seen and os.path.getsize(_p) > 0:
+                _first_seen[_p] = time.time()
+        time.sleep(0.05)
+
+
+_watcher = threading.Thread(target=_watch_mirror, daemon=True)
+_watcher.start()
 resP = launch_training(spec_p, upload=False, poll_sec=1, quiet=True)
+_stop_watch.set(); _watcher.join()
 assert resP["exit_code"] == 0 and resP["monitor"]["skipped"] == [3], resP["monitor"]
+_mP = os.path.join(f"{WORK_DIR}/mirror/trial-policy", os.path.basename(resP["metrics_path"]))
+assert _mP in _first_seen and _first_seen[_mP] < resP["metrics"][-1]["t"], "写し先への追記が学習中に行われていない"
+print(f"mirror received the first metric line {resP['metrics'][-1]['t'] - _first_seen[_mP]:.1f}s before the last step")
 assert not os.path.isdir(f"{CKPT_DIR}/trial-policy/global_step_3") and os.path.isdir(f"{CKPT_DIR}/trial-policy/global_step_6")
 print("upload policy OK")
 
@@ -196,6 +372,7 @@ man_old = json.loads(json.dumps(man)); rc = man_old["run_config"]
 for k in ("training_view", "train_file", "train_file_sha256", "logged_loss_scale", "upload_steps", "upload_policy", "residual_differences", "official_world_size"):
     rc.pop(k, None)
 rc["overrides"]["trainer.importance_sampling_mode"] = "vanilla"; rc["overrides"]["data.train_files"] = AO_PARQUET
+rc["env"]["WANDB_DIR"] = f"{WORK_DIR}/wandb"   # 旧版は全 run で同じフォルダ
 pr_old, w_old = check_resume_compatibility(man_old, 1)
 assert any("公式 8 GPU 再現" in p for p in pr_old) and any("training_view" in w for w in w_old), (pr_old, w_old)
 EMULATE_OFFICIAL_WORLD_SIZE = False
@@ -203,9 +380,50 @@ pr_old2, _ = check_resume_compatibility(man_old, 1)
 assert not pr_old2, pr_old2
 sp_old = build_resume_spec(man_old, f"{CKPT_DIR}/trial-launchtest/global_step_3")
 assert sp_old["overrides"]["data.train_files"] == AO_PARQUET and sp_old["logged_loss_scale"] == 1.0 and sp_old["upload_policy"] == "all"
+assert sp_old["env"]["WANDB_DIR"] == f"{WORK_DIR}/wandb/trial-launchtest"   # 再開時は run ごとのフォルダに直す
 EMULATE_OFFICIAL_WORLD_SIZE = True
 print("legacy resume OK")
 
 rec = write_experiment_record(spec, [resA, resB], upload=False)
 assert rec["runs"][1]["first_step"] == 4
+assert os.path.isfile(f"{WORK_DIR}/mirror/trial-launchtest/experiment_record_trial-launchtest.json")   # 実験記録も写し先に置く
+# 写し先が応答しなくても、記録の写しは timeout で諦めて戻る（次の起動や結果の表示を止めない）
+_orig_copyfile = shutil.copyfile
+shutil.copyfile = lambda *a, **k: time.sleep(5)
+try:
+    _t0 = time.time()
+    assert mirror_record(_src, "trial-launchtest", timeout=0.5) is None and time.time() - _t0 < 3
+finally:
+    shutil.copyfile = _orig_copyfile
+_rec_dst = f"{WORK_DIR}/mirror/trial-launchtest/tail_src.txt"
+assert mirror_record(_src, "trial-launchtest") == _rec_dst and open(_rec_dst).read() == open(_src).read()
+# 同じ名前の記録を写し直す途中で失敗しても、前に写した記録は壊れない（一時名に書いてから置き換える）。一時ファイルも残さない
+_before = open(_rec_dst).read()
+
+
+def _partial_copy(src, dst, **k):
+    open(dst, "w").write("partial")
+    raise OSError("simulated quota error")
+
+
+shutil.copyfile = _partial_copy
+try:
+    assert mirror_record(_src, "trial-launchtest") is None
+finally:
+    shutil.copyfile = _orig_copyfile
+assert open(_rec_dst).read() == _before and not glob.glob(f"{WORK_DIR}/mirror/trial-launchtest/*.tmp-*")
+# HF への記録の保存が失敗しても、写し先には置く
+class _FailingUploadApi(_FakeRepoApi):
+    def upload_file(self, **kw):
+        raise ConnectionError("simulated upload failure")
+
+
+os.remove(f"{WORK_DIR}/mirror/trial-launchtest/experiment_record_trial-launchtest.json")
+HF_API, HF_ACCOUNT_NAME = _FailingUploadApi(), "someone"
+try:
+    write_experiment_record(spec, [resA, resB], upload=True); raise RuntimeError("the failing upload was not reported")
+except ConnectionError:
+    assert os.path.isfile(f"{WORK_DIR}/mirror/trial-launchtest/experiment_record_trial-launchtest.json")
+finally:
+    HF_API, HF_ACCOUNT_NAME = None, None
 print("ALL LAUNCH/MONITOR TESTS PASSED")

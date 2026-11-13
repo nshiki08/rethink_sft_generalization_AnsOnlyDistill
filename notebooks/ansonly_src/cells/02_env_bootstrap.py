@@ -111,7 +111,7 @@ if GPU_CAP is not None and GPU_CAP >= (10, 0):
     if not ALLOW_BLACKWELL_TORCH_DEVIATION:
         raise SystemExit(
             f"GPU {GPUS[0]['name']}（compute capability {GPU_CAP[0]}.{GPU_CAP[1]}）では公式の torch 2.6.0 が動かない（sm_100/sm_120 のコードが無い）。\n"
-            "  - 公式環境のまま学習する: ランタイムを A100 に変更する（推奨）\n"
+            "  - 公式環境のまま学習する: ランタイムを A100 に変更する（公式との環境の差が最も少ない。G4 で始めた run は G4 でしか再開できない）\n"
             "  - このまま使う: ALLOW_BLACKWELL_TORCH_DEVIATION=True にして再実行する。torch 2.7.1+cu128 を使い、公式との差として記録する\n"
             f"    変更内容: {GPU_PROFILES['blackwell']['deviation']}")
     GPU_PROFILE = "blackwell"
@@ -267,6 +267,12 @@ p = dict(python=platform.python_version(), torch=torch.__version__, cuda=torch.v
          cap=list(torch.cuda.get_device_capability(0)) if torch.cuda.is_available() else None,
          cudnn=torch.backends.cudnn.version() if torch.cuda.is_available() else None,
          nccl=list(torch.cuda.nccl.version()) if torch.cuda.is_available() else None)
+if not p["cuda_available"]:
+    try:   # CUDA を初期化できない理由（ドライバが古い、ドライバが見つからない、CPU 版の torch など）を torch 自身の言葉で取る
+        torch.cuda.init()
+        p["cuda_init_error"] = None
+    except Exception as e:
+        p["cuda_init_error"] = f"{type(e).__name__}: {e}"
 if p["cuda_available"]:
     import flash_attn, flash_attn.bert_padding  # noqa: F401
     from flash_attn import flash_attn_func
@@ -280,29 +286,57 @@ import verl.trainer.fsdp_sft_trainer_ours  # noqa: F401
 import verl.model_merger.fsdp_model_merger  # noqa: F401
 print("PROBE_OK " + json.dumps(dict(probe=p, packages=vers)))
 '''
+def _arch_ok(arch_list, cap):
+    """torch の arch 一覧に、その GPU で動くコードがあるか。同じ major の小さい minor 向けコード（例: L4 の sm_89 で sm_86/sm_80）は動く。
+    PTX（compute_XY）は XY <= 実機なら JIT で動く"""
+    for a in arch_list:
+        kind, _, num = a.partition("_")
+        if not num.isdigit():
+            continue
+        major, minor = int(num[:-1]), int(num[-1])
+        if kind == "sm" and major == cap[0] and minor <= cap[1]:
+            return True
+        if kind == "compute" and (major, minor) <= tuple(cap):
+            return True
+    return False
+
+
+def gpu_probe_problem(gpus, gpu_cap, probe, profile_name):
+    """GPU があるのに公式環境の torch で使えないとき、原因を分けて文にする（問題が無ければ None）。
+    (a) torch が CUDA を初期化できない（ドライバと torch の CUDA 版の不一致、GPU の切断、CPU 版の torch）と、
+    (b) CUDA は使えるが、その GPU 用のコードが torch に無い（GPU プロファイルの取り違え）は対処が違うので、同じ文にしない"""
+    if not gpu_cap:
+        return None
+    g = gpus[0]
+    if not probe.get("cuda_available"):
+        return (f"GPU（{g['name']}、ドライバ {g['driver']}）は nvidia-smi に見えているが、公式環境の torch {probe['torch']}（CUDA {probe.get('cuda')}）が CUDA を初期化できない。\n"
+                f"  torch のエラー: {probe.get('cuda_init_error') or '取得できなかった'}\n"
+                "  torch に GPU 用のコードが無いのではない（その確認は CUDA を初期化できた後に行う）。考えられる原因:\n"
+                "  - ドライバが torch の CUDA 版に対して古い（torch のエラーに driver / too old と出る）→ ランタイムを作り直す。直らなければ別の種類の GPU を選ぶ\n"
+                "  - ランタイムの GPU が切断された・切り替わった → ランタイムを接続し直し、セル 0 から実行する\n"
+                "  - CPU 版の torch が入っている（torch の CUDA が None。AO_TORCH_INDEX_URL が設定されている）→ 環境変数を外してセル 1 を実行し直す\n"
+                "  pin（torch の版）は自分で変えない")
+    if not _arch_ok(probe["arch_list"], gpu_cap):
+        return (f"torch {probe['torch']} に compute capability {tuple(gpu_cap)} 用のコードが無い（torch が持つ arch: {probe['arch_list']}）。"
+                f"GPU プロファイル {profile_name} とこの GPU（{g['name']}）の組み合わせを確認する")
+    return None
+
+
 _r = subprocess.run([TRAIN_PY, "-c", _probe_src], capture_output=True, text=True, env=_TRAIN_ENV_VARS, cwd=REPO_DIR)
 _ok = [l for l in _r.stdout.splitlines() if l.startswith("PROBE_OK ")]
 if _r.returncode != 0 or not _ok:
     print(_r.stdout[-3000:], _r.stderr[-5000:])
-    raise RuntimeError("公式環境の確認に失敗。不足パッケージは EXTRA_PIP_PACKAGES に追加して再実行する")
+    raise RuntimeError("公式環境の確認に失敗（原因は上の出力の末尾）。ModuleNotFoundError / ImportError なら、不足パッケージを EXTRA_PIP_PACKAGES に追加して再実行する。"
+                       f"CUDA のエラー（no kernel image など）なら、GPU（{GPUS[0]['name'] if GPUS else 'なし'}）と GPU プロファイル {GPU_PROFILE} の組み合わせを確認する（pin は変えない）")
 _probe = json.loads(_ok[-1][len("PROBE_OK "):])
 TORCH_PROBE, PKG_VERSIONS = _probe["probe"], _probe["packages"]
 assert TORCH_PROBE["python"].startswith(TRAIN_PYTHON_VERSION + "."), TORCH_PROBE["python"]
 if GPU_CAP:
-    # 同じ major の小さい minor 向けコード（例: L4 の sm_89 で sm_86/sm_80）は動く。PTX（compute_XY）は XY <= 実機なら JIT で動く
-    def _arch_ok(arch_list, cap):
-        for a in arch_list:
-            kind, _, num = a.partition("_")
-            if not num.isdigit():
-                continue
-            major, minor = int(num[:-1]), int(num[-1])
-            if kind == "sm" and major == cap[0] and minor <= cap[1]:
-                return True
-            if kind == "compute" and (major, minor) <= tuple(cap):
-                return True
-        return False
-
-    assert _arch_ok(TORCH_PROBE["arch_list"], GPU_CAP), f"torch {TORCH_PROBE['torch']} に compute capability {GPU_CAP} 用のコードが無い: {TORCH_PROBE['arch_list']}"
+    _gpu_problem = gpu_probe_problem(GPUS, GPU_CAP, TORCH_PROBE, GPU_PROFILE)
+    if _gpu_problem:
+        if _r.stderr.strip():
+            print(_r.stderr[-2000:])   # torch の警告（CUDA initialization: ... など）
+        raise SystemExit(_gpu_problem)
     assert TORCH_PROBE.get("cuda_matmul_ok"), "GPU 上の行列積に失敗"
     assert TORCH_PROBE.get("flash_attn_kernel_ok"), "flash-attn のカーネル実行に失敗"
     assert TORCH_PROBE["abi"] == PROFILE["cxx11abi"], f"torch の C++ ABI {TORCH_PROBE['abi']} が flash-attn wheel（cxx11abi={PROFILE['cxx11abi']}）と合わない"

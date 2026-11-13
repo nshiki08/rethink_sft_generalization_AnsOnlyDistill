@@ -53,6 +53,7 @@ EVAL_INTRO = """# Answer-only (AO) 学生の評価ノートブック（Google Co
 - 評価: 公式 `evaluation/math_eval/math_eval_budget.py` を無変更で実行（MATH500 avg@3、AIME24 avg@10、temperature 0.6、top_p 0.95、最大 32768 token、math-verify）
 - 比較: 公開 CoT 学生と Base は論文の値（App. D）を表に並べる。論文との差は tensor parallel 1（論文は 2 GPU）だけ
 - GPU: A100（vLLM 0.8.5 は G4 に非対応）。学習とは別のセッションで実行してよい
+- 比較表に使う本走の評価（Base・CoT 学生・AO 学生を同じ手順・同じ環境で測る）は、評価用の別リポジトリ（評価キット）で行う。このノートブックの評価の手順は変えていない
 
 ## 実行順
 

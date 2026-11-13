@@ -113,9 +113,18 @@ def build_manifest(spec, step, ckpt_dir, with_sha256=None, content="full"):
 
 # ---- HF 転送 -----------------------------------------------------------------------------------
 def ensure_ckpt_repo():
-    assert HF_API is not None, "HF にログインしていない（最初のセルで HF_TOKEN を設定）"
-    assert HF_CKPT_REPO_ID, "HF_CKPT_REPO_ID が未設定"
-    HF_API.create_repo(HF_CKPT_REPO_ID, private=HF_CKPT_PRIVATE, repo_type="model", exist_ok=True)
+    """checkpoint repo があることを確かめる（無ければ作る）。戻り値: repo ID。ID は使う直前に決める（設定セルの再実行で None に戻っていてもよい）"""
+    assert HF_API is not None, "HF にログインしていない（Colab Secrets に HF_TOKEN を登録し、セル 0 から実行し直す）"
+    repo_id = resolve_ckpt_repo_id()
+    assert repo_id, "checkpoint repo の ID を決められない（HF のアカウント名が取れていない。セクション 2 を実行し直すか、設定セルで repo ID を指定する）"
+    HF_API.create_repo(repo_id, private=HF_CKPT_PRIVATE, repo_type="model", exist_ok=True)
+    return repo_id
+
+
+def hf_run_url(run_id):
+    """HF 上の run のフォルダの URL（ブラウザで開ける）。repo の ID が決まらなければ None"""
+    repo_id = resolve_ckpt_repo_id()
+    return f"https://huggingface.co/{repo_id}/tree/main/runs/{run_id}" if repo_id else None
 
 
 def hf_verify_uploaded(repo_id, path_in_repo, manifest, revision):
@@ -143,9 +152,13 @@ def hf_verify_uploaded(repo_id, path_in_repo, manifest, revision):
 def upload_checkpoint(spec, step, ckpt_dir, log=print):
     """保存完了した checkpoint を runs/<run_id>/global_step_<step>/ へ転送し、検証後に完了マーカーを置く。既存の完了済み step は上書きしない"""
     t0 = time.time()
-    ensure_ckpt_repo()
+    repo_id = ensure_ckpt_repo()
     pir = f"runs/{spec['run_id']}/global_step_{step}"
-    remote = hf_run_paths(HF_CKPT_REPO_ID, spec["run_id"]).get(step)
+    try:   # 一覧を取得できないときは転送しない（「HF に無い」と取り違えて完了済みの step を上書きしないため）。監視が次の確認で試し直す
+        remote = hf_run_paths(repo_id, spec["run_id"], strict=True).get(step)
+    except Exception as e:  # noqa
+        log(f"{pir}: HF のファイル一覧を取得できない（{type(e).__name__}: {str(e)[:200]}）。この回は転送しない")
+        return dict(status="upload_failed", error=f"file listing failed: {e!r}"[:500], path_in_repo=pir, duration_sec=time.time() - t0)
     if remote and remote["complete"]:
         log(f"collision: {pir} は HF に完了済みで存在する。上書きしない")
         return dict(status="collision_remote_complete", path_in_repo=pir)
@@ -157,7 +170,7 @@ def upload_checkpoint(spec, step, ckpt_dir, log=print):
     last_err = None
     for attempt in range(5):
         try:
-            info = HF_API.upload_folder(folder_path=ckpt_dir, path_in_repo=pir, repo_id=HF_CKPT_REPO_ID, repo_type="model",
+            info = HF_API.upload_folder(folder_path=ckpt_dir, path_in_repo=pir, repo_id=repo_id, repo_type="model",
                                         commit_message=f"{spec['run_id']} global_step_{step} ({content})", ignore_patterns=ignore)
             break
         except Exception as e:  # noqa
@@ -167,7 +180,7 @@ def upload_checkpoint(spec, step, ckpt_dir, log=print):
             time.sleep(wait)
     else:
         return dict(status="upload_failed", error=repr(last_err)[:500], path_in_repo=pir, duration_sec=time.time() - t0)
-    mism = hf_verify_uploaded(HF_CKPT_REPO_ID, pir, manifest, info.oid)
+    mism = hf_verify_uploaded(repo_id, pir, manifest, info.oid)
     if mism:
         log(f"verify failed for {pir}: {mism[:5]}")
         return dict(status="verify_failed", commit=info.oid, mismatches=mism, path_in_repo=pir, duration_sec=time.time() - t0)
@@ -176,11 +189,11 @@ def upload_checkpoint(spec, step, ckpt_dir, log=print):
     with open(os.path.join(ckpt_dir, "ao_upload_verified.json"), "w") as f:
         json.dump(marker, f, indent=2)
     info2 = HF_API.upload_file(path_or_fileobj=os.path.join(ckpt_dir, "ao_upload_verified.json"), path_in_repo=f"{pir}/ao_upload_verified.json",
-                               repo_id=HF_CKPT_REPO_ID, repo_type="model", commit_message=f"{spec['run_id']} global_step_{step} verified")
+                               repo_id=repo_id, repo_type="model", commit_message=f"{spec['run_id']} global_step_{step} verified")
     dur = time.time() - t0
     log(f"uploaded+verified {pir} [{content}] ({manifest['total_bytes'] / 1e9:.2f} GB, {dur:.0f}s) commit={info.oid[:10]} marker={info2.oid[:10]}")
     return dict(status="verified", content=content, commit=info.oid, marker_commit=info2.oid, path_in_repo=pir, total_bytes=manifest["total_bytes"], duration_sec=dur,
-                url=f"https://huggingface.co/{HF_CKPT_REPO_ID}/tree/{info2.oid}/{pir}")
+                url=f"https://huggingface.co/{repo_id}/tree/{info2.oid}/{pir}")
 
 
 # ---- 監視スレッド ------------------------------------------------------------------------------
@@ -322,6 +335,140 @@ class TrainingMonitor(threading.Thread):
             time.sleep(self.poll_sec)
 
 
+# ---- 学習ログの写し（切断対策） ------------------------------------------------------------------
+# Colab は切断でランタイムのディスクが消える。学習中のログと step ごとの loss を、写し先（Drive のフォルダなど）へ別スレッドで写す。
+# 学習プロセスにも、その出力を読むスレッドにも関与しない。写しに失敗しても警告を出すだけで、学習は止めない。
+# 写し先の決め方と検査（log_mirror_dir / mirror_dir_problem）はセル 4-a にある。
+def append_missing_tail(src, dst, chunk=1 << 20):
+    """src のうち dst にまだ無い末尾だけを dst に追記する。dst にある内容は消さない（途中で切断しても、それまでに写した分は残る）。
+    対象は、追記だけされるファイル（.log / .metrics.jsonl）と 1 回だけ書かれるファイル（.spec.json / .cmd.txt / .result.json）。戻り値: 追記した byte 数"""
+    size = os.path.getsize(src)
+    try:
+        done = os.path.getsize(dst)
+    except FileNotFoundError:
+        done = 0   # まだ写していない。それ以外のエラー（一時的な I/O エラーなど）は「無い」と扱わない（全体を追記し直すと内容が重複する）
+    if done > size:
+        raise OSError(f"写し先 {dst} のほうが長い（{done} > {size} byte）。別のファイルの可能性があるので上書きしない")
+    copied = 0
+    if done < size:
+        with open(src, "rb") as fs, open(dst, "ab") as fd:
+            fs.seek(done)
+            while copied < size - done:
+                b = fs.read(min(chunk, size - done - copied))
+                if not b:
+                    break
+                fd.write(b)
+                copied += len(b)
+    return copied
+
+
+class LogMirror(threading.Thread):
+    """run のログ一式（<起動時刻>.log / .metrics.jsonl / .spec.json / .cmd.txt / .result.json）を、写し先の <run_id>/ へ一定間隔で写すスレッド。
+    写しに失敗（写し先が無い・書けない・遅い）しても警告を出すだけで、学習にもログの読み取りにも影響しない"""
+
+    def __init__(self, src_dir, dst_dir, prefix, interval_sec=60):
+        super().__init__(daemon=True)
+        self.src_dir, self.dst_dir, self.prefix, self.interval_sec = src_dir, dst_dir, prefix, float(interval_sec)
+        self.state = dict(dst_dir=dst_dir, bytes_copied=0, syncs_ok=0, failures=0, last_ok_at=None, last_error=None)
+        self._stop_evt, self._failing = threading.Event(), 0
+
+    def sync_once(self):
+        problem = mirror_dir_problem(self.dst_dir)
+        if problem:
+            raise OSError(problem)
+        os.makedirs(self.dst_dir, exist_ok=True)
+        first_error = None
+        for src in sorted(glob.glob(os.path.join(glob.escape(self.src_dir), glob.escape(self.prefix) + ".*"))):
+            try:
+                self.state["bytes_copied"] += append_missing_tail(src, os.path.join(self.dst_dir, os.path.basename(src)))
+            except Exception as e:  # noqa: 1 つのファイルを写せなくても、ほかのファイル（loss の履歴など）は写す
+                first_error = first_error or e
+        if first_error is not None:
+            raise first_error
+        self.state["syncs_ok"] += 1
+        self.state["last_ok_at"] = now_iso()
+
+    def _try_sync(self):
+        try:
+            self.sync_once()
+        except Exception as e:  # noqa: 写しの失敗で学習を止めない
+            self._failing += 1
+            self.state["failures"] += 1
+            self.state["last_error"] = f"{type(e).__name__}: {str(e)[:300]}"
+            if self._failing == 1 or self._failing % 30 == 0:   # 同じ警告を毎回は出さない
+                print(f"[log mirror {time.strftime('%H:%M:%S')}] WARN: 学習ログを {self.dst_dir} へ写せない（{self._failing} 回連続。学習は続ける）: "
+                      f"{self.state['last_error']}", flush=True)
+            return False
+        if self._failing:
+            print(f"[log mirror {time.strftime('%H:%M:%S')}] 学習ログの写しが回復した（{self.dst_dir}）", flush=True)
+            self._failing = 0
+        return True
+
+    def run(self):
+        self._try_sync()   # 起動直後に 1 回（写し先の問題を最初に知らせる）
+        while not self._stop_evt.wait(self.interval_sec):
+            self._try_sync()
+        self._try_sync()   # 終了時にもう 1 回（最後の行と result.json を写す）
+
+    def finish(self, timeout=120):
+        """最後の写しを行って止める。写し先が応答しないときは timeout 秒で待つのをやめる（スレッドは daemon なので放置してよい）"""
+        self._stop_evt.set()
+        self.join(timeout)
+        if self.is_alive():
+            print(f"[log mirror] WARN: 最後の写しが {timeout} 秒で終わらなかった（{self.dst_dir}）。ログはランタイムのディスクにある", flush=True)
+        return dict(self.state)
+
+
+def start_log_mirror(run_id, run_log_dir, prefix):
+    """写し先が設定されていれば LogMirror を起動して返す（無ければ None）"""
+    root = log_mirror_dir()
+    if not root:
+        print("  学習ログの写し: なし（LOG_MIRROR_DIR / AO_DRIVE_LOG_DIR が未設定。loss の推移はランタイムのディスクにだけ残り、切断で消える。"
+              "Colab Secrets に AO_DRIVE_LOG_DIR を登録してセル 0 を実行し直すと、次の起動から写す）")
+        return None
+    mirror = LogMirror(run_log_dir, os.path.join(root, run_id), prefix, interval_sec=LOG_MIRROR_INTERVAL_SEC)
+    print(f"  学習ログの写し: {mirror.dst_dir} へ {LOG_MIRROR_INTERVAL_SEC:g} 秒ごと（失敗しても学習は止めない）")
+    mirror.start()
+    return mirror
+
+
+def mirror_record(path, run_id, timeout=60):
+    """記録ファイル 1 個を写し先の <run_id>/ にコピーする。写し先が未設定なら何もしない。失敗しても警告だけ。
+    写し先が応答しないときは timeout 秒で待つのをやめる（次の学習の起動や結果の表示を止めない）。戻り値: コピー先（しなかった場合 None）"""
+    root = log_mirror_dir()
+    if not root:
+        return None
+    dst = os.path.join(root, run_id, os.path.basename(path))
+    tmp = f"{dst}.tmp-{os.getpid()}-{time.time_ns()}"
+    out = {}
+
+    def _copy():
+        try:
+            problem = mirror_dir_problem(dst)
+            if problem:
+                raise OSError(problem)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copyfile(path, tmp)       # 一時名に書いてから置き換える（途中で失敗しても、前に写した同名の記録を壊さない）
+            os.replace(tmp, dst)
+            out["dst"] = dst
+        except Exception as e:  # noqa: 写しの失敗で処理を止めない
+            out["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    t = threading.Thread(target=_copy, daemon=True)
+    t.start()
+    t.join(timeout)
+    if out.get("dst"):
+        print("記録の写し:", dst)
+        return dst
+    reason = out.get("error") or f"{timeout:g} 秒で終わらなかった"
+    print(f"WARN: 記録 {os.path.basename(path)} を {os.path.dirname(dst)} へ写せない（{reason}）。記録は {path} にある")
+    return None
+
+
 # ---- 起動 --------------------------------------------------------------------------------------
 _METRIC_RE = re.compile(r"(?:^|\s)step:(\d+)((?: - [\w/]+:\S+)+)")
 
@@ -346,15 +493,19 @@ _INTERESTING = ("Saving checkpoint", "Updated checkpoint tracker", "Loaded", "lo
 
 
 def launch_training(spec, kill_after_step=None, upload=None, keep_local=None, quiet=False, poll_sec=10, stable_scans=True):
-    """公式エントリーポイントを torchrun (python -m torch.distributed.run) で起動し、ログを流しつつ監視スレッドで checkpoint を HF へ転送する。終了まで戻らない。"""
+    """公式エントリーポイントを torchrun (python -m torch.distributed.run) で起動し、ログを流しつつ監視スレッドで checkpoint を HF へ転送する。終了まで戻らない。
+    step ごとの loss などは <起動時刻>.metrics.jsonl に 1 行ずつ追記し（切断しても途中まで残る）、写し先があれば LogMirror が別スレッドで写す。"""
     upload = HF_UPLOAD_CHECKPOINTS if upload is None else upload
     if upload:
         ensure_ckpt_repo()
     run_id = spec["run_id"]
     run_log_dir = f"{LOG_DIR}/{run_id}"
     os.makedirs(run_log_dir, exist_ok=True)
+    if spec["env"].get("WANDB_DIR"):
+        os.makedirs(spec["env"]["WANDB_DIR"], exist_ok=True)   # run ごとの wandb 出力先
     ts = time.strftime("%Y%m%d-%H%M%S")
     log_path = f"{run_log_dir}/{ts}.log"
+    metrics_path = f"{run_log_dir}/{ts}.metrics.jsonl"
     with open(f"{run_log_dir}/{ts}.spec.json", "w") as f:
         json.dump(spec, f, indent=2, ensure_ascii=False)
     port = random.randint(20000, 21000)
@@ -367,54 +518,75 @@ def launch_training(spec, kill_after_step=None, upload=None, keep_local=None, qu
     with open(f"{run_log_dir}/{ts}.cmd.txt", "w") as f:
         f.write(" \\\n  ".join(cmd) + "\n\nenv: " + json.dumps(spec["env"]) + "\n")
     print(f"launch {run_id}: log={log_path}")
+    print(f"  step ごとの loss: {metrics_path}（1 step ごとに 1 行追記）")
     print("  " + " ".join(cmd[:10]) + " ...")
-    t_launch = time.time()
-    # start_new_session=True: torchrun とワーカーを 1 つのプロセスグループにし、試走の一時停止/終了をグループごと送れるようにする
-    proc = subprocess.Popen(cmd, cwd=REPO_DIR, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, errors="replace",
-                            start_new_session=True)
-    with open(f"{WORK_DIR}/ao-trainer.pgid", "w") as f:   # セル 1 を再実行したとき、残った学習プロセスをこの process group ごと終了する
-        f.write(str(proc.pid))
-    mon = TrainingMonitor(proc, spec, kill_after_step=kill_after_step, upload=upload, keep_local=keep_local, poll_sec=poll_sec, stable_scans=stable_scans)
-    mon.start()
-    metrics, events = [], []
+    mirror = start_log_mirror(run_id, run_log_dir, ts)
+    mirror_state = None
     try:
-        with open(log_path, "w") as lf:
-            for line in proc.stdout:
-                t = time.time()
-                lf.write(f"[{t - t_launch:9.1f}s] {line}")
-                m = parse_metric_line(line)
-                if m:
-                    m["t"] = t
-                    _scale = float(spec.get("logged_loss_scale", 1.0))
-                    if "train/loss" in m:
-                        m["train/loss_official_scale"] = m["train/loss"] / _scale   # adv-only で N/8 倍されたログを公式スケールへ戻した値
-                    metrics.append(m)
-                    if not quiet:
-                        print(f"[{t - t_launch:7.0f}s] step {m['step']}/{spec['total_steps']} loss={m.get('train/loss_official_scale', float('nan')):.4f}"
-                              f"{'' if _scale == 1.0 else f' (logged {_scale:g}x: ' + format(m.get('train/loss', float('nan')), '.4f') + ')'} "
-                              f"lr={m.get('train/lr', float('nan')):.3e} grad_norm={m.get('train/grad_norm', float('nan')):.3f} entropy={m.get('train/entropy/mean', float('nan')):.3f}", flush=True)
-                elif any(k in line for k in _INTERESTING) and "ratio_list_all" not in line:
-                    events.append(dict(t=t, line=line.rstrip()[:300]))
-                    if not quiet:
-                        print(f"[{t - t_launch:7.0f}s] {line.rstrip()[:200]}", flush=True)
-    except KeyboardInterrupt:
-        print("KeyboardInterrupt -> terminating training process group")
-        mon._terminate()
-    rc = proc.wait()
-    try:
-        mon.join(timeout=3600 * 6)   # プロセス終了後も、最後の checkpoint の転送が終わるまで待つ
-    except KeyboardInterrupt:
-        print("KeyboardInterrupt during final upload -> 結果は転送未完了のまま記録する")
-    t_end = time.time()
-    result = dict(run_id=run_id, spec=spec, exit_code=rc, killed_by_monitor=mon.killed, log_path=log_path, launched_at=t_launch, ended_at=t_end,
-                  wall_sec=t_end - t_launch, metrics=metrics, events=events, monitor=dict(uploaded=mon.state["uploaded"], failed=mon.state["failed"],
-                  complete_local=mon.state["complete_local"], gpu_mem_max_mb=mon.state["gpu_mem_max_mb"], deleted_local=mon.state["deleted_local"], skipped=mon.state["skipped"],
-                  events=mon.state["events"]))
-    with open(f"{run_log_dir}/{ts}.result.json", "w") as f:
-        json.dump(result, f, indent=2, ensure_ascii=False, default=str)
+        t_launch = time.time()
+        # start_new_session=True: torchrun とワーカーを 1 つのプロセスグループにし、試走の一時停止/終了をグループごと送れるようにする
+        proc = subprocess.Popen(cmd, cwd=REPO_DIR, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, errors="replace",
+                                start_new_session=True)
+        with open(f"{WORK_DIR}/ao-trainer.pgid", "w") as f:   # セル 1 を再実行したとき、残った学習プロセスをこの process group ごと終了する
+            f.write(str(proc.pid))
+        mon = TrainingMonitor(proc, spec, kill_after_step=kill_after_step, upload=upload, keep_local=keep_local, poll_sec=poll_sec, stable_scans=stable_scans)
+        mon.start()
+        metrics, events = [], []
+        _metrics_file_ok = True
+        try:
+            # buffering=1: 1 行ごとに書き出す（切断・カーネル終了でも、それまでの行がファイルに残る）
+            with open(log_path, "w", buffering=1) as lf, open(metrics_path, "w", buffering=1) as mf:
+                for line in proc.stdout:
+                    t = time.time()
+                    lf.write(f"[{t - t_launch:9.1f}s] {line}")
+                    m = parse_metric_line(line)
+                    if m:
+                        m["t"] = t
+                        _scale = float(spec.get("logged_loss_scale", 1.0))
+                        if "train/loss" in m:
+                            m["train/loss_official_scale"] = m["train/loss"] / _scale   # adv-only で N/8 倍されたログを公式スケールへ戻した値
+                        metrics.append(m)
+                        if _metrics_file_ok:
+                            try:   # nan / inf は NaN / Infinity と書かれる（Python の json で読める）
+                                mf.write(json.dumps(m, ensure_ascii=False) + "\n")
+                            except (OSError, ValueError) as e:   # 書けなくても学習とログの読み取りは続ける
+                                _metrics_file_ok = False
+                                print(f"WARN: {metrics_path} に書けない（{type(e).__name__}: {str(e)[:200]}）。以後の loss は終了時の result.json にだけ残る", flush=True)
+                        if not quiet:
+                            print(f"[{t - t_launch:7.0f}s] step {m['step']}/{spec['total_steps']} loss={m.get('train/loss_official_scale', float('nan')):.4f}"
+                                  f"{'' if _scale == 1.0 else f' (logged {_scale:g}x: ' + format(m.get('train/loss', float('nan')), '.4f') + ')'} "
+                                  f"lr={m.get('train/lr', float('nan')):.3e} grad_norm={m.get('train/grad_norm', float('nan')):.3f} entropy={m.get('train/entropy/mean', float('nan')):.3f}", flush=True)
+                    elif any(k in line for k in _INTERESTING) and "ratio_list_all" not in line:
+                        events.append(dict(t=t, line=line.rstrip()[:300]))
+                        if not quiet:
+                            print(f"[{t - t_launch:7.0f}s] {line.rstrip()[:200]}", flush=True)
+        except KeyboardInterrupt:
+            print("KeyboardInterrupt -> terminating training process group")
+            mon._terminate()
+        rc = proc.wait()
+        try:
+            mon.join(timeout=3600 * 6)   # プロセス終了後も、最後の checkpoint の転送が終わるまで待つ
+        except KeyboardInterrupt:
+            print("KeyboardInterrupt during final upload -> 結果は転送未完了のまま記録する")
+        t_end = time.time()
+        result = dict(run_id=run_id, spec=spec, exit_code=rc, killed_by_monitor=mon.killed, log_path=log_path, metrics_path=metrics_path, launched_at=t_launch, ended_at=t_end,
+                      wall_sec=t_end - t_launch, metrics=metrics, events=events, monitor=dict(uploaded=mon.state["uploaded"], failed=mon.state["failed"],
+                      complete_local=mon.state["complete_local"], gpu_mem_max_mb=mon.state["gpu_mem_max_mb"], deleted_local=mon.state["deleted_local"], skipped=mon.state["skipped"],
+                      events=mon.state["events"]), log_mirror=(dict(dst_dir=mirror.dst_dir) if mirror is not None else None))
+        with open(f"{run_log_dir}/{ts}.result.json", "w") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False, default=str)
+    finally:
+        if mirror is not None:   # 例外で抜けるときも、最後の写しを行ってスレッドを止める
+            mirror_state = mirror.finish()
+    result["log_mirror"] = mirror_state
     status = "killed(simulated disconnect)" if mon.killed else ("OK" if rc == 0 else f"FAILED rc={rc}")
     print(f"finished {run_id}: {status} | steps logged={len(metrics)} | wall={t_end - t_launch:.0f}s | GPU mem max MB={mon.state['gpu_mem_max_mb']} "
           f"| uploaded={sorted(mon.state['uploaded'])} | failed={ {k: v['status'] for k, v in mon.state['failed'].items()} }")
+    if upload:
+        print(f"  HF: {hf_run_url(run_id)}")
+    if mirror_state is not None:
+        print(f"  学習ログの写し: {mirror_state['dst_dir']} | 写せた回数 {mirror_state['syncs_ok']} | 失敗 {mirror_state['failures']}"
+              + (f" | 最後の失敗: {mirror_state['last_error']}" if mirror_state["last_error"] else ""))
     if mon.state["failed"]:
         print("*** HF 転送に失敗した checkpoint がある。ローカルには残している。ネットワーク復旧後に upload_checkpoint() を再実行する ***")
     return result
@@ -445,17 +617,26 @@ def summarize_timing(result):
 
 
 # ---- HF からの再開 ------------------------------------------------------------------------------
-def list_hf_checkpoints(run_id):
-    """HF 上の run の checkpoint 一覧。完了マーカーのあるものだけを再開候補にする"""
-    paths = hf_run_paths(HF_CKPT_REPO_ID, run_id)
+class MarkerFetchError(RuntimeError):
+    """完了マーカー（ao_upload_verified.json）が HF にあるのに、取得できない・読めない"""
+
+
+def list_hf_checkpoints(run_id, strict=False):
+    """HF 上の run の checkpoint 一覧。完了マーカーのあるものだけを再開候補にする。
+    strict=False: 一覧やマーカーを取得できないものは、未完了として返す。
+    strict=True: ファイル一覧を取得できなければその例外を、マーカーを取得できなければ MarkerFetchError を出す（通信の失敗を「未完了」と取り違えない）"""
+    repo_id = resolve_ckpt_repo_id()
+    paths = hf_run_paths(repo_id, run_id, strict=strict)
     rows = []
     for step in sorted(paths):
         row = dict(step=step, complete=paths[step]["complete"], n_files=len(paths[step]["files"]))
         if row["complete"]:
             try:
-                mp = hf_hub_download(HF_CKPT_REPO_ID, f"runs/{run_id}/global_step_{step}/ao_upload_verified.json", repo_type="model", local_dir=f"{WORK_DIR}/hf_markers")
+                mp = hf_hub_download(repo_id, f"runs/{run_id}/global_step_{step}/ao_upload_verified.json", repo_type="model", local_dir=f"{WORK_DIR}/hf_markers")
                 row.update(json.load(open(mp)))
             except Exception as e:  # noqa
+                if strict:
+                    raise MarkerFetchError(f"step {step} の完了マーカーを取得できない（{type(e).__name__}: {str(e)[:200]}）") from e
                 row["complete"] = False
                 row["marker_error"] = str(e)[:200]
         row.setdefault("content", "full")   # 旧版のマーカーには content が無い（全ファイルを送っていた）
@@ -466,14 +647,16 @@ def list_hf_checkpoints(run_id):
 
 def download_hf_checkpoint(run_id, step, revision=None):
     """HF から checkpoint を取得し manifest で検証する。戻り値: (local_path, manifest, revision)"""
+    repo_id = resolve_ckpt_repo_id()
+    assert repo_id, "checkpoint repo の ID を決められない（HF にログインしていない。セル 0 から実行し直す）"
     pir = f"runs/{run_id}/global_step_{step}"
-    marker_path = hf_hub_download(HF_CKPT_REPO_ID, f"{pir}/ao_upload_verified.json", repo_type="model", local_dir=f"{WORK_DIR}/hf_markers")
+    marker_path = hf_hub_download(repo_id, f"{pir}/ao_upload_verified.json", repo_type="model", local_dir=f"{WORK_DIR}/hf_markers")
     marker = json.load(open(marker_path))
     revision = revision or marker["folder_commit"]
     local = f"{CKPT_DIR}/{run_id}/global_step_{step}"
     tmp = f"{WORK_DIR}/hf_download/{run_id}_{step}"
     shutil.rmtree(tmp, ignore_errors=True)
-    snapshot_download(HF_CKPT_REPO_ID, repo_type="model", revision=revision, allow_patterns=[f"{pir}/*", f"{pir}/**"], local_dir=tmp)
+    snapshot_download(repo_id, repo_type="model", revision=revision, allow_patterns=[f"{pir}/*", f"{pir}/**"], local_dir=tmp)
     src = os.path.join(tmp, pir)
     if os.path.isdir(local):
         shutil.rmtree(local)
@@ -599,9 +782,10 @@ def build_resume_spec(manifest, local_ckpt_path):
     spec.setdefault("official_world_size", OFFICIAL_WORLD_SIZE)
     spec.setdefault("residual_differences", residual_differences(manifest["world_size"], saved.get("max_length", OFFICIAL_MAX_LENGTH), view.get("enabled", False)))
     spec["resume_from_path"] = local_ckpt_path
-    spec["resumed_from"] = dict(step=manifest["step"], hf_repo=HF_CKPT_REPO_ID, folder_commit=manifest.get("folder_commit"))
+    spec["resumed_from"] = dict(step=manifest["step"], hf_repo=resolve_ckpt_repo_id(), folder_commit=manifest.get("folder_commit"))
     spec["fork_commit_at_resume"] = FORK_COMMIT
     spec["env"]["VERL_SFT_LOGGING_LEVEL"] = "INFO"
+    spec["env"]["WANDB_DIR"] = wandb_dir_for(spec["run_id"])       # run ごとのフォルダ（保存時のパスは環境で変わり得る。学習内容に影響しない）
     assert ov["trainer.total_epochs"] == str(saved["epochs"]) and spec["total_steps"] == saved["total_steps"], "総 epoch 数・総 step 数は保存時の値を維持する"
     return spec
 
@@ -609,9 +793,25 @@ def build_resume_spec(manifest, local_ckpt_path):
 def resume_run_from_hf(run_id, step="latest", kill_after_step=None, upload=None):
     """HF の完了済み checkpoint から新プロセスで再開する。未保存 step は再実行になる"""
     require_training_env(None)
-    rows = list_hf_checkpoints(run_id)
+    # 止まる理由を取り違えないよう、「HF を使えない」「repo を参照できない」「一覧を取得できない」「完了マーカーを取得できない」「run が無い」
+    # 「再開できる step が無い」を分けて確認する
+    assert HF_API is not None, "HF にログインしていない（Colab Secrets に HF_TOKEN を登録し、セル 0 から実行し直す）。checkpoint が無いのではない"
+    repo_id = resolve_ckpt_repo_id()
+    assert repo_id, "checkpoint repo の ID を決められない（HF のアカウント名が取れていない。セクション 2 を実行し直すか、設定セルで repo ID を指定する）"
+    if not hf_repo_exists(repo_id):
+        raise SystemExit(f"HF の checkpoint repo {repo_id} を参照できない（repo が無い、HF_TOKEN に権限が無い、または通信の失敗）。checkpoint が無いのではない")
+    try:
+        rows = list_hf_checkpoints(run_id, strict=True)
+    except MarkerFetchError as e:   # 通信の失敗を「転送が不完全」と取り違えない（取り違えると、古い step から再開して新しい step を上書きし得る）
+        raise SystemExit(f"HF の {repo_id} の run {run_id}: {e}。通信の失敗の可能性がある。checkpoint が不完全なのではない。時間をおいて実行し直す"
+                         "（繰り返す場合は、HF 上のその step の ao_upload_verified.json を確認する）")
+    except Exception as e:  # noqa: 通信の失敗を「run が無い」と取り違えない
+        raise SystemExit(f"HF の {repo_id} のファイル一覧を取得できない（{type(e).__name__}: {str(e)[:200]}）。通信の失敗の可能性がある。"
+                         "checkpoint が無いのではない。時間をおいて実行し直す")
+    if not rows:
+        raise SystemExit(f"HF の {repo_id} に run {run_id} の checkpoint が 1 つも無い（run_id を確認する。HF 上の run 一覧は RESUME_RUN_ID=None で『再開』セルを実行すると出る）")
     complete = [r for r in rows if r["resumable"]]   # optimizer 状態込みで転送・検証済みのものだけが再開候補
-    print(f"HF checkpoints for {run_id}:")
+    print(f"HF checkpoints for {run_id}（{repo_id}）:")
     for r in rows:
         print(f"  step {r['step']:6d} complete={r['complete']} content={r['content']} resumable={r['resumable']} files={r['n_files']} "
               f"commit={str(r.get('folder_commit', ''))[:10]} verified_at={r.get('verified_at', '')}")
@@ -682,7 +882,7 @@ def get_manifest(run_id, step):
     local = f"{CKPT_DIR}/{run_id}/global_step_{step}/ao_ckpt_manifest.json"
     if os.path.isfile(local):
         return json.load(open(local))
-    p = hf_hub_download(HF_CKPT_REPO_ID, f"runs/{run_id}/global_step_{step}/ao_ckpt_manifest.json", repo_type="model", local_dir=f"{WORK_DIR}/hf_markers")
+    p = hf_hub_download(resolve_ckpt_repo_id(), f"runs/{run_id}/global_step_{step}/ao_ckpt_manifest.json", repo_type="model", local_dir=f"{WORK_DIR}/hf_markers")
     return json.load(open(p))
 
 
@@ -717,13 +917,16 @@ def write_experiment_record(spec, results, evaluations=None, final_model=None, u
     with open(path, "w") as f:
         json.dump(rec, f, indent=2, ensure_ascii=False, default=str)
     print("experiment record:", path)
-    if upload and HF_API is not None and HF_CKPT_REPO_ID:
-        ensure_ckpt_repo()
-        ts = time.strftime("%Y%m%d-%H%M%S")
-        for name in (f"experiment_record_{ts}.json", "experiment_record_latest.json"):
-            HF_API.upload_file(path_or_fileobj=path, path_in_repo=f"runs/{spec['run_id']}/{name}", repo_id=HF_CKPT_REPO_ID, repo_type="model",
-                               commit_message=f"{spec['run_id']} experiment record {ts}")
-        print(f"uploaded to https://huggingface.co/{HF_CKPT_REPO_ID}/tree/main/runs/{spec['run_id']}")
+    try:
+        if upload and HF_API is not None and resolve_ckpt_repo_id():
+            repo_id = ensure_ckpt_repo()
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            for name in (f"experiment_record_{ts}.json", "experiment_record_latest.json"):
+                HF_API.upload_file(path_or_fileobj=path, path_in_repo=f"runs/{spec['run_id']}/{name}", repo_id=repo_id, repo_type="model",
+                                   commit_message=f"{spec['run_id']} experiment record {ts}")
+            print(f"uploaded to {hf_run_url(spec['run_id'])}")
+    finally:
+        mirror_record(path, spec["run_id"])   # 写し先（Drive など）にも置く。HF への保存の後に行い、HF への保存が失敗しても行う
     return rec
 
 

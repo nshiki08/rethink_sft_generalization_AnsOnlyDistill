@@ -4,8 +4,8 @@
 TRAIN_RESULTS = globals().get("TRAIN_RESULTS", {})
 if not RESUME_RUN_ID:
     print("RESUME_RUN_ID が未設定。再開しない。HF 上の run 一覧:")
-    if HF_API is not None and HF_CKPT_REPO_ID and hf_repo_exists(HF_CKPT_REPO_ID):
-        _runs = sorted({f.split("/")[1] for f in HF_API.list_repo_files(HF_CKPT_REPO_ID, repo_type="model") if f.startswith("runs/")})
+    if HF_API is not None and resolve_ckpt_repo_id() and hf_repo_exists(resolve_ckpt_repo_id()):
+        _runs = sorted({f.split("/")[1] for f in HF_API.list_repo_files(resolve_ckpt_repo_id(), repo_type="model") if f.startswith("runs/")})
         for _r in _runs:
             print("  ", _r)
 else:

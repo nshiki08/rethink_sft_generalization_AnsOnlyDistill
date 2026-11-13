@@ -8,7 +8,8 @@
 | --- | --- | --- |
 | Colab のカーネルに公式の pin を pip で入れる | Colab は Python 3.13（2026-08 から）。numpy 1.26.4 / ray 2.43.0 は cp312 まで | セル 1 が uv で Python 3.12 の公式環境を作り、2 つ目のカーネルで実行する |
 | 学習の subprocess だけ公式環境で動かせば足りる | セル内でも公式コード（dataset クラス、math-verify、tokenizer）を使う。`import verl` は ray を必要とする | 設定セル以降を公式環境カーネルで実行（`%%ao`） |
-| G4 でも公式 torch 2.6.0 が動く | import はできるが sm_120 のコードが無く、CUDA カーネルの実行で失敗する（"no kernel image is available"） | A100 を使う。G4 は `ALLOW_BLACKWELL_TORCH_DEVIATION=True`（torch 2.7.1+cu128）で差分として記録 |
+| G4 でも公式 torch 2.6.0 が動く | import はできるが sm_120 のコードが無く、CUDA カーネルの実行で失敗する（"no kernel image is available"） | A100 なら公式 pin のまま。G4 は `ALLOW_BLACKWELL_TORCH_DEVIATION=True`（torch 2.7.1+cu128）で差分として記録 |
+| セル 1 が「torch に compute capability … 用のコードが無い: []」で止まる（以前の表示） | torch が CUDA を初期化できないと arch 一覧が空になり、原因（ドライバと torch の CUDA 版の不一致、GPU の切断、CPU 版の torch）と違う文が出ていた | `gpu_probe_problem()` が 2 つの場合を分け、初期化できないときは torch のエラー文とドライバの版を表示する |
 | flash-attn の wheel を「torch の版」だけで選ぶ | 2.7.4.post1 の torch2.6 用 wheel は sm_80/90 のみ、torch2.7 用 wheel は sm_120 まで含む。ABI も違う（FALSE / TRUE） | プロファイルごとに wheel URL を固定 |
 | 1 GPU の FSDP2 は reduce が恒等なので安全 | world size 1 の NCCL AVG で勾配が 0 になる未解決報告がある | セクション 2 で FSDP 無しとの勾配比較。OK でないと学習しない |
 | Colab の uv 設定がそのまま使われる | Colab は `UV_*` で制約ファイルを指定していることがあり、Colab 既定の版に固定される | 公式環境の作成では `UV_*` を外し `--no-config` |
@@ -52,6 +53,14 @@
 | 保存途中の checkpoint を転送してしまう | trainer はファイルを順に書く | `checkpoint_is_complete()`: 全ファイルの存在・zip の整合・サイズが 2 回の走査で不変 |
 | カーネルの `huggingface_hub` と学習側の版が違う | Colab は起動時に別版を import 済み | セル 0 で import 前に pin。違う場合は警告 |
 | `dict()` got multiple values for keyword argument | 監査 jsonl で `row` を二重指定 | 辞書を別に組み立てる |
+| 設定セルを実行し直すと、試走・本学習が「`HF_CKPT_REPO_ID` が未設定」で止まり、再開は「checkpoint が無い」で止まる（以前の動作） | 4-a が `HF_CKPT_REPO_ID` を書き換えていたので、設定セルの再実行で `None` に戻った | `resolve_ckpt_repo_id()` が使う直前に決める。HF を使うコードは `HF_CKPT_REPO_ID` を直接読まない。再開は「未ログイン」「repo を参照できない」「ファイル一覧を取得できない」「完了マーカーを取得できない」「run が無い」「再開できる step が無い」を別の文で止める |
+| 切断すると loss の推移が残らない（以前の動作） | loss はメモリ上にあり、ファイルに書くのは学習終了後だった。ログの書き込みもバッファされていた | 1 step ごとに `.metrics.jsonl` へ追記、ログも 1 行ごとに書き出す。写し先（Drive）へは `LogMirror` が別スレッドで写す |
+| Drive のパスに書いたのに Drive に無い | Drive をマウントしていない状態で `/content/drive/...` にフォルダを作ると、ランタイムのディスクに普通のフォルダができる（切断で消える） | `mirror_dir_problem()`: `/content/drive` 配下でマウントされていなければ書かずに警告する |
+| 写し先を相対パスで書く | セル 0（Colab のカーネル、`/content`）と公式環境のカーネル（作業フォルダ）で別の場所を指し、マウントの検査をすり抜けてランタイムのディスクに書く | セル 0 は相対パスの `AO_DRIVE_LOG_DIR` に警告を出し、直さずに渡す。`mirror_dir_problem()` は絶対パスでない写し先に書かない。設定セルは `LOG_MIRROR_DIR` が絶対パスであることを確かめる。Colab で Drive の外の絶対パスを登録したときは、セル 0 が「ランタイムのディスクにある」と警告する |
+| セル 1 の後に `AO_DRIVE_LOG_DIR` を登録してセル 0 を実行し直しても、学習ログが写されない | 公式環境のカーネルの環境変数は、セル 1 が起動した時点の写し | セル 0 が、動いている公式環境のカーネルにも値を渡す |
+| 写し先のファイルを毎回まるごと上書きする | 上書きの途中で切断すると、それまでに写した内容まで失う | ログと loss の推移は `append_missing_tail()` が写し先に無い末尾だけを追記し、既にある内容は消さない。実験記録（`mirror_record()`）は一時名に書いてから置き換える |
+| HF と通信できなかっただけなのに、完了済みの step を「HF に無い」「転送が不完全」と扱う | 一覧や完了マーカーの取得の失敗を、空の一覧・未完了と同じに扱っていた。再開が古い step を選ぶ、同じ step を転送し直して上書きする、という動作になり得る | 再開（`resume_run_from_hf`）、転送（`upload_checkpoint`）、本学習の直前確認（`preflight_train`）は、一覧を取得できなければ進まない。再開は完了マーカーを取得できないときも止まる。表示だけの箇所（ドライラン、探索の一覧）は従来どおり空として扱う |
+| wandb（offline）の記録がどの run のものか分からない | 全 run が同じ `WANDB_DIR` に書いていた | `WANDB_DIR` を run ごとの `wandb/<run_id>/` にする（再開時もその run のフォルダ） |
 
 ## 検証（CPU）
 

@@ -65,6 +65,21 @@ try:
 except RuntimeError as e:
     assert "expected test error" in str(e), e
 
+# ---- セル 1 の後に AO_DRIVE_LOG_DIR を設定してセル 0 を実行し直すと、動いている公式環境のカーネルにも渡る
+# 相対パスは直さずに渡す（2 つのカーネルは作業フォルダが違う）。写す側の mirror_dir_problem が断るので、どこにも書かれない
+_cell0 = open(os.path.join(SRC, "cells", "01_auth.py")).read()
+os.environ["AO_DRIVE_LOG_DIR"] = "rel_mirror"
+exec(compile(_cell0, "01_auth.py", "exec"), g)
+assert os.environ["AO_DRIVE_LOG_DIR"] == "rel_mirror", os.environ["AO_DRIVE_LOG_DIR"]
+k.run("import os\nassert os.environ.get('AO_DRIVE_LOG_DIR') == 'rel_mirror', os.environ.get('AO_DRIVE_LOG_DIR')\n"
+      + ("assert '絶対パスでない' in mirror_dir_problem(log_mirror_dir()), log_mirror_dir()\n" if up_to >= "06" else ""))
+_mirror = os.path.join(TEST_WORK, "ao_work_bootstrap", "mirror_from_cell0")
+os.environ["AO_DRIVE_LOG_DIR"] = _mirror
+exec(compile(_cell0, "01_auth.py", "exec"), g)
+k.run(f"import os\nassert os.environ.get('AO_DRIVE_LOG_DIR') == {_mirror!r}, os.environ.get('AO_DRIVE_LOG_DIR')\n"
+      + (f"assert log_mirror_dir() == {_mirror!r}, log_mirror_dir()\n" if up_to >= "06" else "")
+      + "print('AO_DRIVE_LOG_DIR reached the official-env kernel:', os.environ['AO_DRIVE_LOG_DIR'])")
+
 # ---- 各 GPU プロファイルの依存解決（GPU 不要）: Colab と同じ Linux x86_64 / Python 3.12 / CUDA 版 torch の index で pin が解けるか
 import subprocess, tempfile
 for prof_name, prof in g["GPU_PROFILES"].items():

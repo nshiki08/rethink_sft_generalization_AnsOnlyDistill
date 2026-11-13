@@ -37,6 +37,7 @@ else:
     _a_last = max(m["step"] for m in _a["metrics"])
     assert _a_last < _total, f"run A が最終 step {_total} まで進んでしまい、中断の模擬になっていない（last step {_a_last}）"
     print(f"run A: step {_a_last} で終了（総 step {_total}）。step {TRIAL_KILL_AFTER_STEP + 1}〜{_a_last} は再実行される")
+    print(f"run A の checkpoint（HF）: {_a['monitor']['uploaded'][TRIAL_KILL_AFTER_STEP].get('url')}")
     _hf_before = {r["step"]: r.get("folder_commit") for r in list_hf_checkpoints(_trial_id) if r["complete"]}
 
     # ローカル checkpoint を消して、HF からの取得だけで再開できることを確かめる
@@ -91,8 +92,13 @@ else:
         print("再開 run と参照 run の比較（同じ step で同じバッチなら loss は近い。大きくずれればデータ位置が復元されていない）:")
         for x in _cmp:
             print("  ", x)
-        RESUME_CHECKS["loss_matches_reference_within_5pct"] = all(x["rel_diff"] < 0.05 for x in _cmp) if _cmp else None
-        RESUME_CHECKS["lr_equals_reference"] = all(x["lr_equal"] for x in _cmp) if _cmp else None
+        # 参照 run が正常に終わり、再開後の全 step を比べられたときだけ合格にする（参照 run が途中で止まると、一部の step しか確認できていない）
+        _ref_ok = TRIAL_RESULTS["C_reference"]["exit_code"] == 0 and len(_cmp) == len(_b["metrics"])
+        if not _ref_ok:
+            print(f"*** 参照 run と比べられたのは {len(_cmp)} / {len(_b['metrics'])} step（参照 run の終了コード {TRIAL_RESULTS['C_reference']['exit_code']}）。"
+                  "全 step を確認できていないので、参照 run との比較 2 項目は不合格にする ***")
+        RESUME_CHECKS["loss_matches_reference_within_5pct"] = _ref_ok and all(x["rel_diff"] < 0.05 for x in _cmp)
+        RESUME_CHECKS["lr_equals_reference"] = _ref_ok and all(x["lr_equal"] for x in _cmp)
 
     # ---- 時間計測と本学習の概算 ----
     _tA, _tB = summarize_timing(_a), summarize_timing(_b)
@@ -118,7 +124,26 @@ else:
     with open(f"{RECORD_DIR}/trial_{_trial_id}.json", "w") as f:
         json.dump(dict(spec=TRIAL_SPEC, timing=TRIAL_TIMING, results={k: dict(exit_code=v["exit_code"], log=v["log_path"], uploaded=list(v["monitor"]["uploaded"])) for k, v in TRIAL_RESULTS.items()}),
                   f, indent=2, ensure_ascii=False, default=str)
+
+    # ---- 合格条件の一覧と HF の URL（この下の行を貼れば、試走の結果を確認できる） ----
+    _check_desc = dict(
+        global_step_continued="再開後の最初の step が中断した step の次",
+        model_loaded="再開時に model を読み込んだ", optimizer_loaded="再開時に optimizer を読み込んだ",
+        lr_scheduler_loaded="再開時に lr scheduler を読み込んだ", rng_loaded="再開時に乱数の状態を読み込んだ",
+        dataloader_state_loaded="再開時にデータの位置を読み込んだ",
+        final_ckpt_uploaded="最終 step の checkpoint を HF へ転送・検証した",
+        kill_step_ckpt_not_overwritten="中断した step の checkpoint が再開後も HF で上書きされていない",
+        no_upload_failures="HF 転送の失敗なし", lr_schedule_continued="再開後の lr が cosine の式と一致",
+        loss_matches_reference_within_5pct="再開 run と中断なしの参照 run の loss の差が 5% 未満", lr_equals_reference="再開 run と参照 run の lr が一致")
+    print()
+    print_checklist("試走の合格条件", [(_check_desc.get(k, k), v, k) for k, v in RESUME_CHECKS.items()])
+    print(f"HF（試走の run）: {hf_run_url(_trial_id)}")
+    for _k in ("A_interrupted", "B_resumed"):
+        for _s, _v in sorted(TRIAL_RESULTS[_k]["monitor"]["uploaded"].items()):
+            if _v.get("url"):
+                print(f"  {_k} step {_s}: {_v['url']}")
     if not all(v for v in RESUME_CHECKS.values() if v is not None):
         print("*** 再開チェックに失敗項目がある。原因を解決するまで本学習へ進まない ***")
     else:
         print("試走の再開チェックはすべて合格")
+    mirror_record(f"{RECORD_DIR}/trial_{_trial_id}.json", _trial_id)   # 合否を表示した後に写す（写し先が遅くても表示を待たせない）

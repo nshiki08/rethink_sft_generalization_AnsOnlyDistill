@@ -21,7 +21,8 @@ AO 学生 = 教師 Qwen3-32B の最終回答 `\boxed{...}` だけを target に�
 ```bash
 python notebooks/ansonly_src/build_nb.py                       # 2 つの ipynb を再生成
 python notebooks/ansonly_src/tests/run_cells_local.py 08        # CPU で設定〜セル 5 を実行（公式 pin の Python）
-python notebooks/ansonly_src/tests/test_launch_monitor.py       # 起動・監視・再開の検証
+python notebooks/ansonly_src/tests/test_launch_monitor.py       # 起動・監視・再開・学習ログの写しの検証
+python notebooks/ansonly_src/tests/test_gpu_probe_messages.py   # セル 1 の GPU のエラー文（Python は何でもよい）
 python notebooks/ansonly_src/tests/run_cells_local.py --eval    # 評価ノートブックのセルを CPU で実行（データ準備のセルに依存しないこと）
 python notebooks/ansonly_src/tests/test_eval_helpers.py         # 評価の CPU で確認できる部分
 ```

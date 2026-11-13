@@ -16,7 +16,8 @@ g["ENV_BOOTSTRAP"] = dict(in_colab=False, work_dir=os.path.join(TEST_WORK, "ao_w
                           eval_env_dir=os.path.join(TEST_WORK, "ao_work_evaltest", "eval_env"), eval_pip_pinned=[], uv_cmd=["uv"],
                           uv_cache_dir="", uv_python_install_dir="")
 exec(compile(open(os.path.join(SRC, "cells", "03_config.py")).read(), "03_config.py", "exec"), g)
-g.update(GPU_PROFILE="official", N_GPUS=0, HF_API=None, HF_CKPT_REPO_ID=None, TRAIN_RESULTS={}, RECORD_DIR=os.path.join(TEST_WORK, "ao_work_evaltest", "records"))
+g.update(GPU_PROFILE="official", N_GPUS=0, HF_API=None, HF_CKPT_REPO_ID=None, TRAIN_RESULTS={}, RECORD_DIR=os.path.join(TEST_WORK, "ao_work_evaltest", "records"),
+         resolve_ckpt_repo_id=lambda: g["HF_CKPT_REPO_ID"])   # セル 4-a の関数の代わり（このテストは 4-a を実行しない）
 exec(compile(open(os.path.join(SRC, "cells", "14_section9_eval.py")).read(), "14_section9_eval.py", "exec"), g)
 
 # 1. 公式スクリプトの絶対パスへのリンクと、公式のローダー・キーでデータが読めること

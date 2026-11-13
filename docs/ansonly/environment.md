@@ -19,7 +19,7 @@
 
 ```
 Colab のカーネル（Python 3.13）
-  セル 0: Secrets → 環境変数
+  セル 0: Secrets → 環境変数。AO_DRIVE_LOG_DIR（学習ログの写し先）があれば Drive をマウント（/content/drive。公式環境カーネルからも同じパスで見える）
   セル 1: Fork の clone → uv で Python 3.12 venv（/content/ao_work/train_env）→ 公式 pin → 確認 → 公式環境カーネルを起動、%%ao を登録
         │ jupyter_client（IPC）でコードを送り、出力・エラー・停止を中継
         ▼
@@ -32,7 +32,7 @@ Colab のカーネル（Python 3.13）
 - `UV_*` 環境変数は公式環境の作成時に外す（Colab が uv 用の制約ファイルを指定している場合があり、Colab 既定の版に固定されるため）
 - 公式環境カーネルには `PYTHONPATH=<repo>` だけを渡す（Colab カーネルの PYTHONPATH に入っている 3.13 用パッケージを読まないため）
 - 公式環境カーネルと学習プロセス（torchrun）はそれぞれ新しい process group で起動し、process group ID を pid ファイルに書く。セル 1 を再実行すると、両方の group を終了してから環境を作る（GPU メモリの解放のため）。pid の再利用で無関係なプロセスを止めないよう、group 内のプロセスの cmdline（`ipykernel_launcher` と公式環境のパス、`torch.distributed.run`）を確認してから終了する
-- 公式環境の確認（セル 1）: Python 3.12、torch の GPU アーキテクチャ（同じ major の小さい minor 向けコードは動くので、L4 の sm_89 は sm_86/sm_80 のコードで可）、GPU 上の行列積、flash-attn の forward / backward カーネル、torch の C++ ABI と flash-attn wheel の一致、NCCL の版、公式 trainer と model merger の import
+- 公式環境の確認（セル 1）: Python 3.12、torch が CUDA を初期化できること（できなければ torch のエラー文とドライバの版を表示して止める）、torch の GPU アーキテクチャ（同じ major の小さい minor 向けコードは動くので、L4 の sm_89 は sm_86/sm_80 のコードで可）、GPU 上の行列積、flash-attn の forward / backward カーネル、torch の C++ ABI と flash-attn wheel の一致、NCCL の版、公式 trainer と model merger の import
 
 ### pin の出典
 

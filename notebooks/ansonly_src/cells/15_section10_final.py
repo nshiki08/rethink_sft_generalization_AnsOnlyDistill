@@ -8,7 +8,8 @@ if not _final_rid:
 elif RUN_MODE == "dry_run":
     print("dry_run では変換・アップロードを行わない")
 else:
-    assert HF_API is not None and HF_CKPT_REPO_ID, "HF にログインしていない"
+    assert HF_API is not None and resolve_ckpt_repo_id(), "HF にログインしていない"
+    _ckpt_repo = resolve_ckpt_repo_id()
     _ckpts = list_hf_checkpoints(_final_rid)
     _complete = [c["step"] for c in _ckpts if c["complete"]]
     print(f"{_final_rid}: HF 完了済み steps = {_complete}")
@@ -32,9 +33,9 @@ else:
     _paper_evals = [r for r in globals().get("PAPER_EVAL_RESULTS", []) if r.get("run_id") == _final_rid]
     if not _paper_evals:   # 評価ノートブックで評価した結果は HF の runs/<run_id>/paper_eval/ から step ごとに最新の結果を読む
         _latest = {}
-        for _f in sorted(f for f in HF_API.list_repo_files(HF_CKPT_REPO_ID, repo_type="model") if f.startswith(f"runs/{_final_rid}/paper_eval/")):
+        for _f in sorted(f for f in HF_API.list_repo_files(_ckpt_repo, repo_type="model") if f.startswith(f"runs/{_final_rid}/paper_eval/")):
             _latest[_f.split("/")[-1].split("_")[0]] = _f   # step<N>_<時刻>.json → 時刻順で最後が最新
-        _paper_evals = [json.load(open(hf_hub_download(HF_CKPT_REPO_ID, _f, repo_type="model", local_dir=f"{WORK_DIR}/hf_markers"))) for _f in _latest.values()]
+        _paper_evals = [json.load(open(hf_hub_download(_ckpt_repo, _f, repo_type="model", local_dir=f"{WORK_DIR}/hf_markers"))) for _f in _latest.values()]
         if _paper_evals:
             print(f"論文と同じ評価の結果を HF から読んだ: {len(_paper_evals)} step")
     _pe_md = "\n".join(f"| {r['step']} | " + " | ".join(f"{r['results'][d][f'avg@{PAPER_EVAL_K[d]}']:.1f} ({'' if r['results'][d].get('paper_reference') is None else r['results'][d]['paper_reference']})"
@@ -94,7 +95,7 @@ Answer-only (AO) 蒸留の学生モデル。公開 CoT 学生 `{_saved_spec['cot
 {_changes_md}
 
 - 環境: {json.dumps(ENV_RECORD.get('gpus'))}, torch {PKG_VERSIONS.get('torch')}, transformers {PKG_VERSIONS.get('transformers')}, flash-attn {FLASH_ATTN_VERSION}, Colab={IN_COLAB}, GPU プロファイル {_saved_spec.get('gpu_profile', 'official')}{('（公式からの変更: ' + _saved_spec['gpu_profile_deviation'] + '）') if _saved_spec.get('gpu_profile_deviation') else ''}
-- 再開用 checkpoint（model/optimizer/extra/dataloader 状態）: `{HF_CKPT_REPO_ID}` の `runs/{_final_rid}/global_step_*`
+- 再開用 checkpoint（model/optimizer/extra/dataloader 状態）: `{_ckpt_repo}` の `runs/{_final_rid}/global_step_*`
 
 ## 評価（論文と同じ方法）
 公式 `evaluation/math_eval/math_eval_budget.py` を無変更で実行（vLLM 0.8.5, temperature 0.6, top_p 0.95, 最大 32768 token, math-verify）。
@@ -116,7 +117,7 @@ loss の低下だけで能力向上は主張しない。上の表が「未実施
     _info_rd = HF_API.upload_file(path_or_fileobj=os.path.join(MERGED_DIR, "..", "README.md"), path_in_repo="README.md", repo_id=FINAL_REPO, repo_type="model",
                                   commit_message=f"model card for {_final_rid}")
     FINAL_MODEL = dict(repo=FINAL_REPO, subfolder=_sub, revision=_info_rd.oid, weights_commit=_info.oid, url=f"https://huggingface.co/{FINAL_REPO}/tree/{_info_rd.oid}/{_sub}",
-                       source_checkpoint=dict(repo=HF_CKPT_REPO_ID, path=f"runs/{_final_rid}/global_step_{_step}"))
+                       source_checkpoint=dict(repo=_ckpt_repo, path=f"runs/{_final_rid}/global_step_{_step}"))
     print("uploaded:", FINAL_MODEL)
 
     # 読み込みと短い生成の確認（アップロード後の revision から）

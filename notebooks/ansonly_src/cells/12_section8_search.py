@@ -17,7 +17,7 @@ else:
     for _rid, _spec in SEARCH_SPECS.items():
         print("=" * 100)
         print_run_spec(_spec)
-        _remote = hf_run_paths(HF_CKPT_REPO_ID, _rid) if HF_API else {}
+        _remote = hf_run_paths(resolve_ckpt_repo_id(), _rid) if HF_API else {}
         if _remote:
             print(f"HF に {_rid} が既にある (steps {sorted(_remote)})。完了済みなら再実行しない。途中なら『再開』セルで RESUME_RUN_ID を指定する")
             continue

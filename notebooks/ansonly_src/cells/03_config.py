@@ -149,7 +149,8 @@ SEED = None                       # None = 公式既定 (trainer.seed=1 は yaml
 # =============================================================================
 # Hugging Face 保存
 # =============================================================================
-HF_CKPT_REPO_ID = None            # None → f"{HF_ACCOUNT_NAME}/rethink-sft-ao-checkpoints"（HF の whoami から決める）
+HF_CKPT_REPO_ID = None            # None → f"{HF_ACCOUNT_NAME}/rethink-sft-ao-checkpoints"（HF の whoami から決める。使う直前に resolve_ckpt_repo_id() が決めるので、
+                                  # このセルを実行し直しても 4-a の再実行は要らない）
 HF_CKPT_PRIVATE = True
 HF_UPLOAD_CHECKPOINTS = True      # 学習中に保存完了した checkpoint を監視スレッドが HF へ転送する
 CKPT_MANIFEST_SHA256 = True       # manifest に sha256 を記録し、転送後に HF 側の LFS sha256 と照合する
@@ -159,6 +160,17 @@ HF_FINAL_MODEL_PRIVATE = True
 
 WANDB_MODE = "offline"            # 公式スクリプトと同じ offline。"online" は WANDB_API_KEY がある場合のみ
 WANDB_PROJECT = "sft_generalization_ao"
+
+# =============================================================================
+# 学習ログの写し（切断対策）
+#   学習中、step ごとの loss などを log/<run_id>/<起動時刻>.metrics.jsonl に 1 行ずつ追記する（ログ本体 .log も 1 行ごとに書き出す）。
+#   写し先を指定すると、別スレッドがその <run_id>/ へ一定間隔で写す。Colab は切断でランタイムのディスクが消えるので、Drive のフォルダを指定する。
+#   Drive のフォルダは Colab Secrets の AO_DRIVE_LOG_DIR で指定する（セル 0 が Drive をマウントする）。LOG_MIRROR_DIR は写し先を変えるだけで、
+#   Drive をマウントしない（Drive のパスを書くなら、Drive がマウント済みであること）。パスは絶対パスで書く。
+#   写しに失敗しても警告を出すだけで、学習は止めない。checkpoint はここに置かない（HF へ転送する）
+# =============================================================================
+LOG_MIRROR_DIR = None             # None → セル 0 が読んだ AO_DRIVE_LOG_DIR（Colab Secrets / 環境変数）。それも無ければ写さない。指定するなら絶対パス
+LOG_MIRROR_INTERVAL_SEC = 60      # 写す間隔（秒）
 
 # =============================================================================
 # 試走（RUN_MODE="trial"）
@@ -254,6 +266,8 @@ assert HF_ANALYSIS_STEP_CONTENT in ("model_only", "full"), HF_ANALYSIS_STEP_CONT
 assert RESUME_CKPT_EVERY % SAVE_FREQ == 0 and all(s % SAVE_FREQ == 0 for s in PAPER_EVAL_STEPS) or HF_UPLOAD_STEPS == "all", \
     "RESUME_CKPT_EVERY と PAPER_EVAL_STEPS は SAVE_FREQ の倍数にする（保存されない step は転送できない）"
 assert isinstance(TRIAL_SAVE_FREQ, int) and TRIAL_SAVE_FREQ > 0
+assert LOG_MIRROR_DIR is None or (isinstance(LOG_MIRROR_DIR, str) and os.path.isabs(LOG_MIRROR_DIR)), "LOG_MIRROR_DIR は None か、フォルダの絶対パス（文字列）"
+assert isinstance(LOG_MIRROR_INTERVAL_SEC, (int, float)) and LOG_MIRROR_INTERVAL_SEC > 0, "LOG_MIRROR_INTERVAL_SEC は正の秒数"
 assert MAX_LENGTH_MODE in ("auto_fit", "official") or isinstance(MAX_LENGTH_MODE, int)
 assert AO_TARGET_STYLE in ("last_boxed_verbatim", "boxed_content", "last_boxed_line")
 assert CPU_OFFLOAD_OVERRIDE is None, "CPU_OFFLOAD_OVERRIDE は fsdp2 経路で効かないので使わない（公式値 False のまま）"
